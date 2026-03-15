@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: repolens-postgres
+    environment:
+      POSTGRES_USER: repolens_user
+      POSTGRES_PASSWORD: repolens_password
+      POSTGRES_DB: repolens
+    ports:
+      - "5454:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: repolens-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5
+    container_name: repolens-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/repolens_password
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+    ports:
+      - "7474:7474" # HTTP
+      - "7687:7687" # Bolt
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    container_name: repolens-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api:/app
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  ingestor:
+    build: ./ingestor
+    container_name: repolens-ingestor
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./ingestor:/app
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build: ./worker
+    container_name: repolens-worker
+    volumes:
+      - ./worker:/app
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  arch-worker:
+    build: ./arch-worker
+    container_name: repolens-arch-worker
+    volumes:
+      - ./arch-worker:/app
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  ci-worker:
+    build: ./ci-worker
+    container_name: repolens-ci-worker
+    volumes:
+      - ./ci-worker:/app
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: repolens-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  bot:
+    build: ./bot
+    container_name: repolens-bot
+    volumes:
+      - ./bot:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  neo4j_data:
