@@ -15,9 +15,9 @@ const AuthCallback: React.FC = () => {
       axios.get(`http://localhost:8000/auth/github/callback?code=${code}`)
         .then(response => {
           if (response.data.status === 'success') {
-            // Ideally store JWT in local storage here
-            // localStorage.setItem('token', response.data.token);
-            navigate('/dashboard');
+            // Store JWT in local storage here
+            localStorage.setItem('token', response.data.token);
+            navigate('/setup');
           } else {
             setError('Authentication failed. Please try again.');
           }

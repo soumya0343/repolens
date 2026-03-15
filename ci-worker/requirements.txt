@@ -1,2 +1,4 @@
 arq
 redis
+httpx
+python-dotenv

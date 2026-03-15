@@ -7,3 +7,7 @@ asyncpg
 httpx
 python-dotenv
 pyjwt
+greenlet
+greenlet
+
+python-dotenv

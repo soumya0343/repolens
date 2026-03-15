@@ -19,6 +19,12 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 @router.get("/")
 async def github_login():
     """Initiate GitHub OAuth flow"""
+    if GITHUB_CLIENT_ID == "local_client_placeholder":
+        # Bypass real GitHub login for local development
+        return {
+            "redirect_url": f"{FRONTEND_URL}/auth/callback?code=mock_code_123"
+        }
+        
     return {
         "redirect_url": f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}&scope=repo read:org read:user"
     }

@@ -1,0 +1,64 @@
+# Environments and Secrets
+.env
+**/.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Python Virtual Environments
+venv/
+env/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+*.egg-info/
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+.yarn/
+.npm/
+.vite/
+
+# Frontend Builds
+frontend/dist/
+frontend/build/
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.AppleDouble
+.LSOverride
+.cursor/
+
+# Database
+redis_data/
+neo4j_data/
+postgres_data/
+
+# Logs
+*.log
+api/uvicorn.log
+logs/
+
+# Temporary / Worker files
+tmp/
+/tmp/repolens_workdir/
+*.tmp
+*.temp
+
+# Docker
+.dockerignore
