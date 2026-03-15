@@ -8,6 +8,5 @@ httpx
 python-dotenv
 pyjwt
 greenlet
-greenlet
-
-python-dotenv
+arq
+redis
