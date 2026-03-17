@@ -31,6 +31,9 @@ async def run_ci_backfill(ctx, repo_id: str, owner: str, name: str, github_token
     print(f"CI Backfill complete for {owner}/{name}.")
     return True
 
+import os
+from arq.connections import RedisSettings
+
 async def startup(ctx):
     print("CI Worker starting up...")
 
@@ -41,3 +44,4 @@ class WorkerSettings:
     functions = [run_ci_backfill]
     on_startup = startup
     on_shutdown = shutdown
+    redis_settings = RedisSettings(host=os.getenv('REDIS_HOST', 'localhost'))

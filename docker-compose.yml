@@ -39,6 +39,8 @@ services:
   api:
     build: ./api
     container_name: repolens-api
+    env_file:
+      - .env
     ports:
       - "8000:8000"
     volumes:
@@ -51,8 +53,10 @@ services:
   ingestor:
     build: ./ingestor
     container_name: repolens-ingestor
-    ports:
-      - "8001:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
     volumes:
       - ./ingestor:/app
     depends_on:
@@ -61,8 +65,14 @@ services:
     restart: unless-stopped
 
   worker:
-    build: ./worker
+    build:
+      context: .
+      dockerfile: ./worker/Dockerfile
     container_name: repolens-worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
     volumes:
       - ./worker:/app
     depends_on:
@@ -73,6 +83,10 @@ services:
   arch-worker:
     build: ./arch-worker
     container_name: repolens-arch-worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
     volumes:
       - ./arch-worker:/app
     depends_on:
@@ -83,6 +97,10 @@ services:
   ci-worker:
     build: ./ci-worker
     container_name: repolens-ci-worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
     volumes:
       - ./ci-worker:/app
     depends_on:
@@ -93,6 +111,11 @@ services:
   frontend:
     build: ./frontend
     container_name: repolens-frontend
+    env_file:
+      - .env
+    environment:
+      - VITE_API_URL=http://api:8000
+      - VITE_WS_URL=ws://api:8000
     ports:
       - "5173:5173"
     volumes:
@@ -103,6 +126,8 @@ services:
   bot:
     build: ./bot
     container_name: repolens-bot
+    env_file:
+      - .env
     volumes:
       - ./bot:/app
       - /app/node_modules

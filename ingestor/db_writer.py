@@ -19,22 +19,33 @@ async def bulk_insert_commits(db: AsyncSession, commits: list[dict]):
     for commit in commits:
         # Expected format matching the `commits` table columns
         # id, repo_id, oid, message, author_email, author_login, committed_date, additions, deletions
-        row = (
-            f"{commit['id']}\t{commit['repo_id']}\t{commit['oid']}\t"
-            f"{commit.get('message', '').replace('\t', ' ').replace('\n', ' ')}\t"
-            f"{commit.get('author_email', '')}\t{commit.get('author_login', '')}\t"
-            f"{commit['committed_date']}\t{commit.get('additions', 0)}\t"
-            f"{commit.get('deletions', 0)}\n"
-        )
+        message = commit.get('message', '')
+        message = message.replace('\t', ' ').replace('\n', ' ')
+
+        row = "\t".join([
+            str(commit['id']),
+            str(commit['repo_id']),
+            str(commit['oid']),
+            message,
+            str(commit.get('author_email', '')),
+            str(commit.get('author_login', '')),
+            str(commit['committed_date']),
+            str(commit.get('additions', 0)),
+            str(commit.get('deletions', 0)),
+        ]) + "\n"
+
         buffer.write(row)
         
     buffer.seek(0)
-    
+    # asyncpg expects a bytes-like object for COPY source
+    buffer_bytes = io.BytesIO(buffer.getvalue().encode('utf-8'))
+    buffer_bytes.seek(0)
+
     # Execute the raw COPY
     # We use COPY format 'csv' with a tab delimiter handling
     result = await raw_conn.driver_connection.copy_to_table(
         'commits',
-        source=buffer,
+        source=buffer_bytes,
         columns=['id', 'repo_id', 'oid', 'message', 'author_email', 'author_login', 'committed_date', 'additions', 'deletions'],
         format='csv',
         delimiter='\t',

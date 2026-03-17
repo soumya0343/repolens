@@ -35,6 +35,9 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
     print(f"Arch Snapshot complete for {owner}/{name}.")
     return True
 
+import os
+from arq.connections import RedisSettings
+
 async def startup(ctx):
     print("Arch Worker starting up...")
 
@@ -45,3 +48,4 @@ class WorkerSettings:
     functions = [run_arch_snapshot]
     on_startup = startup
     on_shutdown = shutdown
+    redis_settings = RedisSettings(host=os.getenv('REDIS_HOST', 'localhost'))

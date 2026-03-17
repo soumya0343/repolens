@@ -1,10 +1,11 @@
 import React from 'react';
 import axios from 'axios';
+import { API_BASE_URL } from '../lib/apiConfig';
 
 const Login: React.FC = () => {
   const handleLogin = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/auth/github/');
+      const response = await axios.get(`${API_BASE_URL}/auth/github/`);
       if (response.data.redirect_url) {
         window.location.href = response.data.redirect_url;
       }

@@ -47,14 +47,24 @@ async def github_callback(code: str, db: AsyncSession = Depends(get_db)):
             user_data = {"id": 12345, "login": "dev_user", "email": "dev@repolens.com", "avatar_url": ""}
             access_token = "mock_github_token"
         else:
-            response = await client.post(token_url, json=data, headers=headers)
+            # GitHub expects form-encoded payload for exchanging code for token
+            response = await client.post(token_url, data=data, headers=headers)
+            try:
+                response.raise_for_status()
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"GitHub token exchange failed: {e}, response={response.text}")
+
             token_data = response.json()
             if "access_token" not in token_data:
-                raise HTTPException(status_code=400, detail="Invalid auth code")
-                
+                raise HTTPException(status_code=400, detail=f"Invalid auth code: {token_data}")
+
             access_token = token_data["access_token"]
-            
-            user_response = await client.get("https://api.github.com/user", headers={"Authorization": f"Bearer {access_token}"})
+
+            user_response = await client.get(
+                "https://api.github.com/user", 
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            user_response.raise_for_status()
             user_data = user_response.json()
 
         # Upsert User into DB
