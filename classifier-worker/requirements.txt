@@ -1,7 +1,7 @@
 arq
 redis
-httpx
-psycopg2-binary
-asyncpg
 sqlalchemy
+asyncpg
+httpx
+openai
 python-dotenv

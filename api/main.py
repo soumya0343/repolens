@@ -8,8 +8,13 @@ from auth import router as auth_router
 from repos import router as repos_router
 from prs import router as prs_router
 from ws_manager import router as ws_router
-
+from internal import router as internal_router
+from internal_ci import router as internal_ci_router
+ 
 app = FastAPI()
+ 
+app.include_router(internal_router)
+app.include_router(internal_ci_router)
 
 app.add_middleware(
     CORSMiddleware,

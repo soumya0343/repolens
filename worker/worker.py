@@ -40,24 +40,8 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
         logger.error(f"Backfill failed for repo {repo_id}: {e}")
         raise
 
-async def run_ci_backfill(ctx, repo_id: str, owner: str, name: str, github_token: str):
-    """CI logs backfill job"""
-    logger.info(f"Starting CI backfill for {owner}/{name}")
-    # TODO: Implement CI log fetching
-    await asyncio.sleep(1)  # Placeholder
-    logger.info(f"Completed CI backfill for {owner}/{name}")
-    return {"status": "completed", "repo": f"{owner}/{name}"}
-
-async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_token: str, default_branch: str):
-    """Architecture snapshot job"""
-    logger.info(f"Starting arch snapshot for {owner}/{name}")
-    # TODO: Implement architecture analysis
-    await asyncio.sleep(1)  # Placeholder
-    logger.info(f"Completed arch snapshot for {owner}/{name}")
-    return {"status": "completed", "repo": f"{owner}/{name}"}
-
 class WorkerSettings:
-    functions = [run_backfill_job, run_ci_backfill, run_arch_snapshot]
+    functions = [run_backfill_job]
     on_startup = startup
     on_shutdown = shutdown
     queue_name = os.getenv('BACKFILL_QUEUE', 'arq:backfill')

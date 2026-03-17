@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Boolean
+from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Boolean, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -43,6 +43,7 @@ class Commit(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_id = Column(UUID(as_uuid=True), ForeignKey("repos.id", ondelete="CASCADE"), index=True)
     oid = Column(String, index=True) # Git SHA
+    __table_args__ = (UniqueConstraint('repo_id', 'oid'),)
     message = Column(String)
     author_email = Column(String, index=True)
     author_login = Column(String, index=True)
@@ -117,3 +118,13 @@ class CIRun(Base):
     
     # Store TestPulse flaky test classifications here
     analysis_results = Column(JSON, nullable=True)
+    
+    
+class ArchAnalysis(Base):
+    __tablename__ = 'arch_analysis'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repo_id = Column(UUID(as_uuid=True), ForeignKey('repos.id', ondelete='CASCADE'), index=True)
+    violations = Column(JSON, nullable=True)
+    import_cycles = Column(JSON, nullable=True)
+    parsed_at = Column(DateTime(timezone=True), server_default=func.now())

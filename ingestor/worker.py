@@ -10,6 +10,7 @@ from database import AsyncSessionLocal
 from models import Repo
 from sqlalchemy.future import select
 from db_writer import bulk_insert_commits
+from models import Commit
 
 async def run_backfill_job(ctx, repo_id: str, github_token: str):
     """
@@ -47,9 +48,18 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                 total_commits += len(nodes)
                 print(f"Fetched {len(nodes)} commits... Total so far: {total_commits}")
 
+                # Get existing oids to dedup
+                existing_stmt = select(Commit.oid).where(Commit.repo_id == repo.id)
+                existing_result = await db.execute(existing_stmt)
+                existing_oids = set(existing_result.scalars().all())
+
                 # Format raw nodes to match our DB schema
                 commits_to_insert = []
                 for node in nodes:
+                    oid = node["oid"]
+                    if oid in existing_oids:
+                        continue  # skip dup
+
                     author_email = node.get("author", {}).get("email", "")
                     author_login = ""
                     if node.get("author", {}).get("user"):
@@ -58,7 +68,7 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                     commits_to_insert.append({
                         "id": str(uuid.uuid4()),
                         "repo_id": str(repo.id),
-                        "oid": node["oid"],
+                        "oid": oid,
                         "message": node["message"],
                         "author_email": author_email,
                         "author_login": author_login,
@@ -67,8 +77,12 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                         "deletions": node["deletions"],
                     })
 
-                # Bulk insert into PostgreSQL using asyncpg copy
-                await bulk_insert_commits(db, commits_to_insert)
+                if commits_to_insert:
+                    print(f"Inserting {len(commits_to_insert)} new commits")
+                    # Bulk insert into PostgreSQL using asyncpg copy
+                    await bulk_insert_commits(db, commits_to_insert)
+                else:
+                    print("No new commits to insert")
 
                 # Broadcast progress
                 async with httpx.AsyncClient() as client:

@@ -19,11 +19,25 @@ async def run_ci_backfill(ctx, repo_id: str, owner: str, name: str, github_token
             # For TestPulse, we care heavily about failures.
             print(f"Processing Run {run_id} ({conclusion})")
             
-            # If we were doing deep analysis now:
-            # logs = await download_run_logs(github_token, owner, name, run_id)
-            # if logs:
-            #     print(f"  Downloaded {len(logs)} log files")
-            #     # Pass logs to Logparser3/Drain for failure clustering
+            logs = await download_run_logs(github_token, owner, name, run_id)
+            if logs:
+                print(f"  Downloaded {len(logs)} log files")
+                # Simple analysis: count errors
+                error_count = sum('error' in log.lower() for log in logs.values())
+                analysis = {
+                    'failure_rate': conclusion == 'failure',
+                    'error_count': error_count,
+                    'log_files': len(logs)
+                }
+                # POST to API
+                async with httpx.AsyncClient() as client:
+                    await client.post("http://api:8000/internal/ci_analysis", json={
+                        'repo_id': repo_id,  # stub
+                        'run_id': run_id,
+                        'analysis': analysis
+                    })
+            else:
+                print(f"  No logs available for run {run_id}")
                 
     except Exception as e:
         print(f"CI Backfill failed: {e}")

@@ -1,4 +1,12 @@
 arq
 redis
 GitPython
-GitPython
+tree-sitter
+tree-sitter-languages
+networkx
+httpx
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+tree-sitter-go
