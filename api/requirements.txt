@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 alembic
 psycopg2-binary
@@ -10,3 +10,4 @@ pyjwt
 greenlet
 arq
 redis
+websockets

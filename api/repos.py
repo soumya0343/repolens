@@ -8,7 +8,7 @@ import os
 
 from database import get_db
 from models import User, Repo, UserRepo, Commit, PullRequest
-from worker_pool import get_redis_pool
+from worker_pool import get_redis_pool, BACKFILL_QUEUE, CI_QUEUE, ARCH_QUEUE
 from cochange_oracle import get_cochange_oracle
 from churn_analyzer import get_churn_analyzer
 
@@ -98,13 +98,13 @@ async def connect_repository(payload: dict, user: User = Depends(get_current_use
 
     # Dispatch ARQ job to start the backfill worker
     redis_pool = await get_redis_pool()
-    await redis_pool.enqueue_job('run_backfill_job', str(repo.id), user.github_token)
+    await redis_pool.enqueue_job('run_backfill_job', str(repo.id), user.github_token, _queue_name=BACKFILL_QUEUE)
     
     # Also dispatch CI logs backfill
-    await redis_pool.enqueue_job('run_ci_backfill', str(repo.id), repo.owner, repo.name, user.github_token)
+    await redis_pool.enqueue_job('run_ci_backfill', str(repo.id), repo.owner, repo.name, user.github_token, _queue_name=CI_QUEUE)
     
     # Finally, dispatch Codebase Snapshot
-    await redis_pool.enqueue_job('run_arch_snapshot', str(repo.id), repo.owner, repo.name, user.github_token, repo.default_branch)
+    await redis_pool.enqueue_job('run_arch_snapshot', str(repo.id), repo.owner, repo.name, user.github_token, repo.default_branch, _queue_name=ARCH_QUEUE)
 
     return {"status": "syncing", "repo_id": str(repo.id), "message": "Backfill job enqueued"}
 
@@ -120,9 +120,9 @@ async def trigger_backfill(repo_id: str, user: User = Depends(get_current_user),
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
     redis_pool = await get_redis_pool()
-    await redis_pool.enqueue_job('run_backfill_job', repo_id, user.github_token)
-    await redis_pool.enqueue_job('run_ci_backfill', repo_id, repo.owner, repo.name, user.github_token)
-    await redis_pool.enqueue_job('run_arch_snapshot', repo_id, repo.owner, repo.name, user.github_token, repo.default_branch)
+    await redis_pool.enqueue_job('run_backfill_job', repo_id, user.github_token, _queue_name=BACKFILL_QUEUE)
+    await redis_pool.enqueue_job('run_ci_backfill', repo_id, repo.owner, repo.name, user.github_token, _queue_name=CI_QUEUE)
+    await redis_pool.enqueue_job('run_arch_snapshot', repo_id, repo.owner, repo.name, user.github_token, repo.default_branch, _queue_name=ARCH_QUEUE)
 
     repo.synced_at = None
     await db.commit()

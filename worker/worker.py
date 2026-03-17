@@ -25,11 +25,17 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
     logger.info(f"Starting backfill for repo {repo_id}")
     
     try:
-        # Import from ingestor
-        from ingestor.worker import run_backfill_job as ingestor_backfill
-        result = await ingestor_backfill(ctx, repo_id, github_token)
-        logger.info(f"Backfill completed for repo {repo_id}")
-        return result
+        # Call the ingestor service via HTTP instead of importing
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "http://ingestor:8000/backfill",
+                json={"repo_id": repo_id, "github_token": github_token},
+                timeout=300.0  # 5 minute timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"Backfill completed for repo {repo_id}")
+            return result
     except Exception as e:
         logger.error(f"Backfill failed for repo {repo_id}: {e}")
         raise
@@ -54,4 +60,5 @@ class WorkerSettings:
     functions = [run_backfill_job, run_ci_backfill, run_arch_snapshot]
     on_startup = startup
     on_shutdown = shutdown
+    queue_name = os.getenv('BACKFILL_QUEUE', 'arq:backfill')
     redis_settings = RedisSettings(host=os.getenv('REDIS_HOST', 'localhost'))

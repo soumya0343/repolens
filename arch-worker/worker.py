@@ -48,4 +48,5 @@ class WorkerSettings:
     functions = [run_arch_snapshot]
     on_startup = startup
     on_shutdown = shutdown
+    queue_name = os.getenv('ARCH_QUEUE', 'arq:arch')
     redis_settings = RedisSettings(host=os.getenv('REDIS_HOST', 'localhost'))

@@ -44,4 +44,5 @@ class WorkerSettings:
     functions = [run_ci_backfill]
     on_startup = startup
     on_shutdown = shutdown
+    queue_name = os.getenv('CI_QUEUE', 'arq:ci')
     redis_settings = RedisSettings(host=os.getenv('REDIS_HOST', 'localhost'))

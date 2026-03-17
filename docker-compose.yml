@@ -114,8 +114,8 @@ services:
     env_file:
       - .env
     environment:
-      - VITE_API_URL=http://api:8000
-      - VITE_WS_URL=ws://api:8000
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
     ports:
       - "5173:5173"
     volumes:
