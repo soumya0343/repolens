@@ -1,5 +1,33 @@
 import asyncio
+import os
+from pathlib import Path
+
+from arq.connections import RedisSettings
+import networkx as nx
+from tree_sitter import Parser
+import httpx
+
+def get_lang(ext):
+    from tree_sitter_language_pack import get_language
+    lang_map = {
+        '.py': 'python',
+        '.js': 'javascript',
+        '.ts': 'typescript',
+        '.java': 'java',
+        '.go': 'go',
+    }
+    return get_language(lang_map.get(ext, 'python'))
+
+LANGUAGES = {
+    '.py': lambda: get_lang('.py'),
+    '.js': lambda: get_lang('.js'),
+    '.ts': lambda: get_lang('.ts'),
+    '.java': lambda: get_lang('.java'),
+    '.go': lambda: get_lang('.go'),
+}
+
 from git_client import clone_repository, cleanup_repository
+from import_visitor import import_visitor
 
 async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_token: str, branch: str = "main"):
     """
@@ -31,9 +59,8 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
                 file_path = root_path / file
                 ext = file_path.suffix.lower()
                 if ext in LANGUAGES:
-                    lang = LANGUAGES[ext]
-                    parser = Parser()
-                    parser.set_language(lang)
+                    lang = LANGUAGES[ext]()
+                    parser = Parser(lang)
                     
                     try:
                         with open(file_path, 'rb') as f:
@@ -100,8 +127,6 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
     print(f"Arch Snapshot complete for {owner}/{name}.")
     return True
 
-import os
-from arq.connections import RedisSettings
 
 async def startup(ctx):
     print("Arch Worker starting up...")
