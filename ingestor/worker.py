@@ -7,11 +7,11 @@ import uuid
 import httpx
 from datetime import datetime, timezone
 from arq.connections import RedisSettings
-from github_client import fetch_commits_batch, fetch_commit_files
+from github_client import fetch_commits_batch, fetch_commit_files, fetch_prs_batch
 from database import AsyncSessionLocal
 from models import Repo
 from sqlalchemy.future import select
-from db_writer import bulk_insert_commits, bulk_insert_commit_files
+from db_writer import bulk_insert_commits, bulk_insert_commit_files, bulk_insert_prs
 from models import Commit
 
 async def run_backfill_job(ctx, repo_id: str, github_token: str):
@@ -137,6 +137,51 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                 "status": "complete",
                 "details": f"Finished fetching {total_commits} commits"
             })
+
+        # Fetch pull requests
+        print("Fetching pull requests...")
+        pr_cursor = None
+        pr_has_next = True
+        total_prs = 0
+        while pr_has_next:
+            try:
+                pr_data = await fetch_prs_batch(github_token, owner, name, pr_cursor)
+                pr_page = pr_data.get("data", {}).get("repository", {}).get("pullRequests", {})
+                pr_nodes = pr_page.get("nodes", [])
+                if not pr_nodes:
+                    break
+
+                prs_to_insert = []
+                for node in pr_nodes:
+                    github_id = str(node.get("databaseId", ""))
+                    if not github_id:
+                        continue
+                    prs_to_insert.append({
+                        "id": str(uuid.uuid4()),
+                        "repo_id": str(repo.id),
+                        "github_id": github_id,
+                        "number": node.get("number", 0),
+                        "title": node.get("title", ""),
+                        "state": node.get("state", ""),
+                        "author_login": (node.get("author") or {}).get("login", ""),
+                        "created_at": node.get("createdAt", ""),
+                        "closed_at": node.get("closedAt", "") or "",
+                        "merged_at": node.get("mergedAt", "") or "",
+                    })
+
+                if prs_to_insert:
+                    await bulk_insert_prs(db, prs_to_insert)
+                    total_prs += len(prs_to_insert)
+                    print(f"  Inserted {len(prs_to_insert)} PRs (total {total_prs})")
+
+                pr_has_next = pr_page.get("pageInfo", {}).get("hasNextPage", False)
+                pr_cursor = pr_page.get("pageInfo", {}).get("endCursor")
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"PR fetch failed, stopping: {e}")
+                break
+
+        print(f"PR ingestion complete. {total_prs} PRs inserted.")
 
         # mark repo as synced so dashboard reflects completion
         repo.synced_at = datetime.now(timezone.utc)

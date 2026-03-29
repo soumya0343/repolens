@@ -59,6 +59,57 @@ async def fetch_commits_batch(token: str, owner: str, name: str, cursor: str = N
         return response.json()
 
 
+BACKFILL_PRS_QUERY = """
+query ($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        databaseId
+        number
+        title
+        state
+        createdAt
+        closedAt
+        mergedAt
+        author {
+          login
+        }
+        comments(first: 20) {
+          nodes {
+            databaseId
+            author { login }
+            body
+            createdAt
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+async def fetch_prs_batch(token: str, owner: str, name: str, cursor: str = None):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    variables = {"owner": owner, "name": name, "cursor": cursor}
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            GRAPHQL_URL,
+            json={"query": BACKFILL_PRS_QUERY, "variables": variables},
+            headers=headers,
+            timeout=30.0
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def fetch_commit_files(token: str, owner: str, name: str, commit_sha: str):
     """Fetch files changed in a specific commit using GitHub REST API"""
     headers = {

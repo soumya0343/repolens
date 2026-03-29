@@ -93,8 +93,45 @@ async def bulk_insert_commit_files(db: AsyncSession, commit_files: list[dict]):
     
 
 async def bulk_insert_prs(db: AsyncSession, prs: list[dict]):
-    # TBD
-    pass
+    """Bulk insert pull requests using PostgreSQL COPY."""
+    if not prs:
+        return
+
+    connection = await db.connection()
+    raw_conn = await connection.get_raw_connection()
+
+    buffer = io.StringIO()
+    for pr in prs:
+        title = (pr.get('title') or '').replace('\t', ' ').replace('\n', ' ')
+        row = "\t".join([
+            str(pr['id']),
+            str(pr['repo_id']),
+            str(pr['github_id']),
+            str(pr['number']),
+            title,
+            str(pr.get('state', '')),
+            str(pr.get('author_login', '')),
+            str(pr.get('created_at', '')),
+            str(pr.get('closed_at', '')),
+            str(pr.get('merged_at', '')),
+        ]) + "\n"
+        buffer.write(row)
+
+    buffer.seek(0)
+    buffer_bytes = io.BytesIO(buffer.getvalue().encode('utf-8'))
+    buffer_bytes.seek(0)
+
+    result = await raw_conn.driver_connection.copy_to_table(
+        'pull_requests',
+        source=buffer_bytes,
+        columns=['id', 'repo_id', 'github_id', 'number', 'title', 'state',
+                 'author_login', 'created_at', 'closed_at', 'merged_at'],
+        format='csv',
+        delimiter='\t',
+        null=''
+    )
+    print(f"PR bulk insert complete. Result: {result}")
+
 
 async def bulk_insert_issues(db: AsyncSession, issues: list[dict]):
     # TBD

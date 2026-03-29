@@ -14,8 +14,10 @@ interface TeamNode { id: string; commit_count: number }
 interface TeamEdge { source: string; target: string; weight: number }
 interface BusFactor { overall_bus_factor: number; risk_level: string; contributors: { name: string; share: number; weighted_commits: number }[]; recommendations: string[] }
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
+interface CouplingNode { id: string; group: number }
+interface CouplingLink { source: string; target: string; value: number }
 
-type Tab = 'overview' | 'files' | 'prs' | 'releases' | 'ci' | 'team' | 'settings';
+type Tab = 'overview' | 'files' | 'prs' | 'coupling' | 'releases' | 'ci' | 'team' | 'settings';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -111,6 +113,43 @@ const TeamGraph: React.FC<{ nodes: TeamNode[]; edges: TeamEdge[] }> = ({ nodes, 
   );
 };
 
+// ── Coupling Graph (circle layout, pure SVG) ──────────────────────────────
+
+const CouplingGraph: React.FC<{ nodes: CouplingNode[]; links: CouplingLink[] }> = ({ nodes, links }) => {
+  if (!nodes.length) return <p className="text-gray-400 text-center py-8">No coupling data yet. Sync a repo with commit history.</p>;
+
+  const W = 640, H = 420, cx = W / 2, cy = H / 2, R = 170;
+  const positions: Record<string, { x: number; y: number }> = {};
+  nodes.forEach((n, i) => {
+    const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+    positions[n.id] = { x: cx + R * Math.cos(angle), y: cy + R * Math.sin(angle) };
+  });
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-2xl mx-auto">
+      {links.map((l, i) => {
+        const s = positions[l.source], t = positions[l.target];
+        if (!s || !t) return null;
+        return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+                     stroke="#f97316" strokeWidth={Math.max(1, l.value * 6)} strokeOpacity={0.5} />;
+      })}
+      {nodes.map(n => {
+        const p = positions[n.id];
+        if (!p) return null;
+        const short = n.id.includes('/') ? n.id.split('/').pop()! : n.id;
+        return (
+          <g key={n.id}>
+            <circle cx={p.x} cy={p.y} r={8} fill="#f97316" fillOpacity={0.85} />
+            <text x={p.x} y={p.y + 20} textAnchor="middle" fontSize={10} fill="#374151">
+              {short.length > 16 ? short.slice(0, 14) + '…' : short}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
+
 // ── Main Dashboard ────────────────────────────────────────────────────────
 
 const Dashboard: React.FC = () => {
@@ -124,6 +163,10 @@ const Dashboard: React.FC = () => {
   const [teamNodes,  setTeamNodes]  = useState<TeamNode[]>([]);
   const [teamEdges,  setTeamEdges]  = useState<TeamEdge[]>([]);
   const [busFactor,  setBusFactor]  = useState<BusFactor | null>(null);
+  const [couplingNodes, setCouplingNodes] = useState<CouplingNode[]>([]);
+  const [couplingLinks, setCouplingLinks] = useState<CouplingLink[]>([]);
+  const [prExplanation,  setPrExplanation]  = useState<{ prId: string; text: string } | null>(null);
+  const [explainLoading, setExplainLoading] = useState<string | null>(null);
   const [repoConfig, setRepoConfig] = useState<Record<string, number>>({ coupling: 0.25, architecture: 0.20, bus_factor: 0.20, collaboration: 0.15, ci: 0.20 });
 
   const [loading,   setLoading]   = useState(true);
@@ -176,7 +219,7 @@ const Dashboard: React.FC = () => {
     if (!token) { navigate('/login'); return; }
     setLoading(true);
     try {
-      const [repo, files, prs, risk, dora, flaky, team, bf] = await Promise.all([
+      const [repo, files, prs, risk, dora, flaky, team, bf, coupling] = await Promise.all([
         apiFetch<RepoData>(`${API_BASE_URL}/repos/${repoId}`),
         apiFetch<FileData[]>(`${API_BASE_URL}/repos/${repoId}/files`),
         apiFetch<PRData[]>(`${API_BASE_URL}/prs/?repo_id=${repoId}&limit=50`),
@@ -185,15 +228,17 @@ const Dashboard: React.FC = () => {
         apiFetch<FlakyTest[]>(`${API_BASE_URL}/repos/${repoId}/tests/flaky`),
         apiFetch<{ nodes: TeamNode[]; edges: TeamEdge[] }>(`${API_BASE_URL}/repos/${repoId}/team/graph`),
         apiFetch<BusFactor>(`${API_BASE_URL}/repos/${repoId}/team/bus-factor`),
+        apiFetch<{ nodes: CouplingNode[]; links: CouplingLink[] }>(`${API_BASE_URL}/repos/${repoId}/coupling`),
       ]);
-      if (repo)   setRepoData(repo);
-      if (files)  setFilesData(files);
-      if (prs)    setPrsData(prs);
-      if (risk)   { setRiskData(risk); setRepoConfig(risk.weights ?? repoConfig); }
-      if (dora)   setDoraData(dora);
-      if (flaky)  setFlakyData(flaky);
-      if (team)   { setTeamNodes(team.nodes); setTeamEdges(team.edges); }
-      if (bf)     setBusFactor(bf);
+      if (repo)     setRepoData(repo);
+      if (files)    setFilesData(files);
+      if (prs)      setPrsData(prs);
+      if (risk)     { setRiskData(risk); setRepoConfig(risk.weights ?? repoConfig); }
+      if (dora)     setDoraData(dora);
+      if (flaky)    setFlakyData(flaky);
+      if (team)     { setTeamNodes(team.nodes); setTeamEdges(team.edges); }
+      if (bf)       setBusFactor(bf);
+      if (coupling) { setCouplingNodes(coupling.nodes); setCouplingLinks(coupling.links); }
     } finally {
       setLoading(false);
     }
@@ -256,6 +301,24 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const explainPR = async (prId: string) => {
+    setExplainLoading(prId);
+    setPrExplanation(null);
+    try {
+      const r = await fetch(`${API_BASE_URL}/prs/${prId}/explain`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const text = typeof data === 'string' ? data : (data.summary ?? data.explanation ?? JSON.stringify(data, null, 2));
+        setPrExplanation({ prId, text });
+      }
+    } finally {
+      setExplainLoading(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -268,13 +331,14 @@ const Dashboard: React.FC = () => {
   }
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'files',    label: 'Files' },
-    { key: 'prs',      label: 'Pull Requests' },
-    { key: 'releases', label: 'Releases' },
-    { key: 'ci',       label: 'CI / Tests' },
-    { key: 'team',     label: 'Team' },
-    { key: 'settings', label: 'Settings' },
+    { key: 'overview',  label: 'Overview' },
+    { key: 'files',     label: 'Files' },
+    { key: 'prs',       label: 'Pull Requests' },
+    { key: 'coupling',  label: 'Coupling' },
+    { key: 'releases',  label: 'Releases' },
+    { key: 'ci',        label: 'CI / Tests' },
+    { key: 'team',      label: 'Team' },
+    { key: 'settings',  label: 'Settings' },
   ];
 
   return (
@@ -433,39 +497,98 @@ const Dashboard: React.FC = () => {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    {['#','Title','Author','State','Risk','Opened'].map(h => (
+                    {['#','Title','Author','State','Risk','Opened',''].map(h => (
                       <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
                   {prsData.map(pr => (
-                    <tr key={pr.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-sm text-gray-500">#{pr.number}</td>
-                      <td className="px-4 py-3 text-sm font-medium text-gray-900 max-w-xs truncate">{pr.title}</td>
-                      <td className="px-4 py-3 text-sm text-gray-500">{pr.author_login}</td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                          pr.state === 'OPEN' ? 'bg-green-100 text-green-800' :
-                          pr.state === 'MERGED' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-600'
-                        }`}>{pr.state}</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {pr.predicted_risk_score != null ? (
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${riskBg(pr.predicted_risk_score)}`}>
-                            {pr.predicted_risk_score}/100
-                          </span>
-                        ) : <span className="text-gray-400 text-xs">—</span>}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-400">
-                        {pr.created_at ? new Date(pr.created_at).toLocaleDateString() : '—'}
-                      </td>
-                    </tr>
+                    <React.Fragment key={pr.id}>
+                      <tr className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-sm text-gray-500">#{pr.number}</td>
+                        <td className="px-4 py-3 text-sm font-medium text-gray-900 max-w-xs truncate">{pr.title}</td>
+                        <td className="px-4 py-3 text-sm text-gray-500">{pr.author_login}</td>
+                        <td className="px-4 py-3">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                            pr.state === 'OPEN' ? 'bg-green-100 text-green-800' :
+                            pr.state === 'MERGED' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-600'
+                          }`}>{pr.state}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {pr.predicted_risk_score != null ? (
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${riskBg(pr.predicted_risk_score)}`}>
+                              {pr.predicted_risk_score}/100
+                            </span>
+                          ) : <span className="text-gray-400 text-xs">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-400">
+                          {pr.created_at ? new Date(pr.created_at).toLocaleDateString() : '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => prExplanation?.prId === pr.id ? setPrExplanation(null) : explainPR(pr.id)}
+                            disabled={explainLoading === pr.id}
+                            className="px-2 py-1 text-xs text-blue-600 border border-blue-200 rounded hover:bg-blue-50 disabled:opacity-50"
+                          >
+                            {explainLoading === pr.id ? '…' : prExplanation?.prId === pr.id ? 'Hide' : 'Explain'}
+                          </button>
+                        </td>
+                      </tr>
+                      {prExplanation?.prId === pr.id && (
+                        <tr>
+                          <td colSpan={7} className="px-4 py-3 bg-blue-50 border-t border-blue-100">
+                            <p className="text-xs font-semibold text-blue-700 mb-1">Risk Explanation</p>
+                            <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans">{prExplanation.text}</pre>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
               {!prsData.length && <p className="text-center py-12 text-gray-400">No pull requests found.</p>}
             </div>
+          </div>
+        )}
+
+        {/* ── Coupling ──────────────────────────────────────────────────── */}
+        {activeTab === 'coupling' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-base font-semibold text-gray-900 mb-1">File Coupling Graph</h2>
+              <p className="text-xs text-gray-400 mb-4">Files that change together frequently. Thicker lines = stronger coupling.</p>
+              <CouplingGraph nodes={couplingNodes} links={couplingLinks} />
+            </div>
+            {couplingLinks.length > 0 && (
+              <div className="bg-white rounded-lg shadow overflow-hidden">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      {['Source File', 'Target File', 'Coupling Score'].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {[...couplingLinks].sort((a, b) => b.value - a.value).slice(0, 20).map((l, i) => (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 text-sm text-gray-700 font-mono truncate max-w-xs">{l.source}</td>
+                        <td className="px-4 py-2 text-sm text-gray-700 font-mono truncate max-w-xs">{l.target}</td>
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-24 bg-gray-100 rounded-full h-1.5">
+                              <div className="h-1.5 rounded-full bg-orange-400" style={{ width: `${Math.min(l.value * 100, 100)}%` }} />
+                            </div>
+                            <span className="text-xs text-gray-500">{(l.value * 100).toFixed(0)}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
