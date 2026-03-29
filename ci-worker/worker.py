@@ -1,46 +1,51 @@
 import asyncio
 import os
+import httpx
 from ci_client import fetch_workflow_runs, download_run_logs
+from test_pulse import TestPulse
 
 async def run_ci_backfill(ctx, repo_id: str, owner: str, name: str, github_token: str):
     """
     ARQ background task to execute the CI log backfill for a repository.
     """
     print(f"Starting CI backfill for repo: {owner}/{name}")
-    
+
+    test_pulse = TestPulse()
+
     try:
         runs = await fetch_workflow_runs(github_token, owner, name)
-        print(f"Found {len(runs)} workflow runs.")
-        
-        for run in runs:
-            run_id = run["id"]
-            conclusion = run["conclusion"] # success, failure, neutral, cancelled
-            
-            # For TestPulse, we care heavily about failures.
-            print(f"Processing Run {run_id} ({conclusion})")
-            
-            logs = await download_run_logs(github_token, owner, name, run_id)
-            if logs:
-                print(f"  Downloaded {len(logs)} log files")
-                # Simple analysis: count errors
-                error_count = sum('error' in log.lower() for log in logs.values())
-                analysis = {
-                    'failure_rate': conclusion == 'failure',
-                    'error_count': error_count,
-                    'log_files': len(logs)
-                }
-                # POST to API
-                async with httpx.AsyncClient() as client:
-                    await client.post("http://api:8000/internal/ci_analysis", json={
-                        'repo_id': repo_id,  # stub
-                        'run_id': run_id,
-                        'analysis': analysis
-                    })
-            else:
-                print(f"  No logs available for run {run_id}")
-                
     except Exception as e:
-        print(f"CI Backfill failed: {e}")
+        print(f"CI Backfill: failed to fetch runs for {owner}/{name}: {e}")
+        return False
+
+    print(f"Found {len(runs)} workflow runs.")
+
+    for run in runs:
+        try:
+            run_id = run["id"]
+            conclusion = run.get("conclusion")
+            print(f"Processing Run {run_id} ({conclusion})")
+
+            logs = await download_run_logs(github_token, owner, name, run_id)
+            if not logs:
+                print(f"  No logs available for run {run_id}")
+                continue
+
+            print(f"  Downloaded {len(logs)} log files, analyzing...")
+            analysis = test_pulse.analyze_logs(logs)
+
+            async with httpx.AsyncClient() as client:
+                await client.post("http://api:8000/internal/ci_analysis", json={
+                    'repo_id': repo_id,
+                    'run_id': str(run_id),
+                    'conclusion': conclusion or "",
+                    'analysis': analysis,
+                    'head_sha': run.get("head_sha", ""),
+                    'name': run.get("name", "CI"),
+                })
+        except Exception as e:
+            print(f"  Run {run.get('id')} failed, skipping: {e}")
+            continue
 
     print(f"CI Backfill complete for {owner}/{name}.")
     return True

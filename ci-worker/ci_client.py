@@ -33,10 +33,10 @@ async def download_run_logs(token: str, owner: str, name: str, run_id: int):
         # The API redirects to an AWS S3 URL for the zip file. httpx follows redirects by default.
         response = await client.get(url, headers=headers, follow_redirects=True)
         
-        if response.status_code == 404:
-            # Logs are expired or unavailable
+        if response.status_code in (403, 404, 410):
+            # 403: insufficient token scope, 404: expired/unavailable, 410: gone
             return None
-            
+
         response.raise_for_status()
         
         # Read the zip file into memory

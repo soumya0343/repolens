@@ -7,10 +7,13 @@ import jwt
 import os
 
 from database import get_db
-from models import User, Repo, UserRepo, Commit, PullRequest, ArchAnalysis
+from models import User, Repo, UserRepo, Commit, PullRequest, PRComment, ArchAnalysis, CommitFile, CIRun
 from worker_pool import get_redis_pool, BACKFILL_QUEUE, CI_QUEUE, ARCH_QUEUE
 from cochange_oracle import get_cochange_oracle
 from churn_analyzer import get_churn_analyzer
+from chronos_graph import get_chronos_graph
+from release_health import get_release_health_tracker
+from risk_scorer import get_unified_risk_scorer
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key")
@@ -173,6 +176,28 @@ async def get_repo_details(repo_id: str, user: User = Depends(get_current_user),
         }
     }
 
+@router.patch("/{repo_id}")
+async def update_repo_config(
+    repo_id: str,
+    payload: dict,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update repository configuration (e.g. risk weight overrides)"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    config = dict(repo.config or {})
+    config.update(payload.get("config", {}))
+    repo.config = config
+    await db.commit()
+    return {"status": "updated", "config": repo.config}
+
+
 @router.get("/{repo_id}/files")
 async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get files in a repository with their risk scores"""
@@ -187,61 +212,50 @@ async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), d
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    # Get commits to analyze patterns
-    commits_result = await db.execute(
-        select(Commit.message).where(Commit.repo_id == repo_id).limit(100)
+    # Query actual files from commit_files table
+    files_result = await db.execute(
+        select(
+            CommitFile.file_path,
+            func.count(CommitFile.id).label('change_count'),
+            func.sum(CommitFile.additions).label('additions'),
+            func.sum(CommitFile.deletions).label('deletions')
+        )
+        .join(Commit, Commit.id == CommitFile.commit_id)
+        .where(Commit.repo_id == repo_id)
+        .group_by(CommitFile.file_path)
+        .order_by(func.count(CommitFile.id).desc())
     )
-    commit_messages = [row[0] for row in commits_result.all() if row[0]]
     
-    # Analyze commit patterns to guess file categories
-    file_patterns = {}
-    keywords = {
-        'api': ['api', 'endpoint', 'route', 'handler'],
-        'model': ['model', 'schema', 'database', 'table', 'entity'],
-        'ui': ['ui', 'component', 'page', 'screen', 'button', 'input'],
-        'test': ['test', 'spec', 'mock', 'fixture'],
-        'config': ['config', 'settings', 'env', 'yaml', 'json'],
-        'util': ['util', 'helper', 'lib', 'tool'],
-    }
+    file_rows = files_result.all()
     
-    for msg in commit_messages:
-        msg_lower = msg.lower()
-        for category, terms in keywords.items():
-            if any(term in msg_lower for term in terms):
-                file_patterns[category] = file_patterns.get(category, 0) + 1
+    if file_rows:
+        # Build file list from actual data
+        files = []
+        for row in file_rows:
+            file_path = row[0]
+            change_count = row[1]
+            additions = row[2] or 0
+            deletions = row[3] or 0
+            
+            # Calculate risk score based on change frequency
+            # More changes = higher risk (up to 95)
+            risk = min(20 + change_count * 5, 95)
+            
+            files.append({
+                "path": file_path,
+                "language": get_language_from_extension(file_path),
+                "lines": additions + deletions,
+                "risk_score": risk,
+                "changes": change_count,
+                "additions": additions,
+                "deletions": deletions,
+                "violations": []
+            })
+    else:
+        # Fallback to empty list if no files in DB yet
+        files = []
     
-    # Build file list based on patterns
-    files = []
-    file_map = {
-        'api': ["src/api.ts", "src/routes.ts", "api/main.py"],
-        'model': ["src/models.ts", "src/db/schema.ts", "models/user.ts"],
-        'ui': ["src/components/Button.tsx", "src/pages/Home.tsx", "frontend/src/App.tsx"],
-        'test': ["tests/api.test.ts", "tests/user.test.ts", "__tests__/setup.ts"],
-        'config': [".env", "config.yaml", "package.json", "tsconfig.json"],
-        'util': ["src/utils.ts", "src/helpers.ts", "lib/format.ts"],
-    }
-    
-    for category, count in sorted(file_patterns.items(), key=lambda x: -x[1]):
-        for f in file_map.get(category, []):
-            if f not in [x['path'] for x in files]:
-                risk = min(30 + count * 5, 95)  # More commits = higher risk
-                files.append({
-                    "path": f,
-                    "language": get_language_from_extension(f),
-                    "lines": 0,
-                    "risk_score": risk,
-                    "violations": []
-                })
-    
-    # If no patterns found, return default files
-    if not files:
-        files = [
-            {"path": "src/main.ts", "language": "typescript", "lines": 100, "risk_score": 45, "violations": []},
-            {"path": "src/App.tsx", "language": "typescript", "lines": 150, "risk_score": 35, "violations": []},
-            {"path": "package.json", "language": "json", "lines": 50, "risk_score": 20, "violations": []},
-        ]
-    
-    return files[:20]  # Limit to 20 files
+    return files[:50]  # Limit to 50 files
 
 def get_language_from_extension(file_path: str) -> str:
     """Map file extension to language"""
@@ -313,9 +327,162 @@ async def get_repo_violations(repo_id: str, user: User = Depends(get_current_use
         }
     ]
 
-@router.get("/{repo_id}/churn")
-async def get_repo_churn_analysis(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Get churn and bus factor analysis for the repository"""
+
+@router.get("/{repo_id}/risk")
+async def get_repo_risk(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Unified risk score aggregated from all engines"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    config = repo.config or {}
+    weights = config.get("weights_normalized")  # None = use defaults
+
+    scorer = await get_unified_risk_scorer(db)
+    return await scorer.calculate_repo_risk(repo_id, weights)
+
+
+@router.get("/{repo_id}/releases")
+async def get_repo_releases(
+    repo_id: str,
+    days: int = 30,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """DORA metrics for the repository"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    tracker = await get_release_health_tracker(db)
+    return await tracker.get_dora_metrics(repo_id, days)
+
+
+@router.get("/{repo_id}/tests/flaky")
+async def get_flaky_tests(
+    repo_id: str,
+    limit: int = 20,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """CI runs ranked by flakiness probability from TestPulse analysis"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    # Query CI runs that have been analyzed
+    ci_result = await db.execute(
+        select(CIRun)
+        .where(
+            CIRun.repo_id == repo_id,
+            CIRun.analysis_results.isnot(None),
+        )
+        .order_by(CIRun.created_at.desc())
+        .limit(200)
+    )
+    ci_runs = ci_result.scalars().all()
+
+    # Aggregate flakiness signals across runs
+    tests = []
+    for run in ci_runs:
+        ar = run.analysis_results or {}
+        tests.append({
+            "ci_run_id": str(run.id),
+            "run_name": run.name,
+            "head_sha": run.head_sha,
+            "conclusion": run.conclusion,
+            "flakiness_prob": round(ar.get("flakiness_prob", 0.0), 3),
+            "total_errors": ar.get("total_errors", 0),
+            "failure_signatures": [
+                {"template": c.get("template", ""), "count": c.get("count", 0)}
+                for c in ar.get("clusters", [])[:3]
+            ],
+            "created_at": run.created_at,
+        })
+
+    # Sort by flakiness probability descending
+    tests.sort(key=lambda x: x["flakiness_prob"], reverse=True)
+    return tests[:limit]
+
+
+@router.get("/{repo_id}/team/bus-factor")
+async def get_bus_factor(
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bus factor and code ownership analysis"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    churn_a = await get_churn_analyzer(db)
+    return await churn_a.analyze_repository(repo_id)
+
+
+@router.get("/{repo_id}/team/graph")
+async def get_team_graph(
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Social graph nodes and edges for D3.js visualization"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    # Get developer list from commits
+    devs_result = await db.execute(
+        select(Commit.author_login, func.count(Commit.id).label("commit_count"))
+        .where(Commit.repo_id == repo_id, Commit.author_login.isnot(None))
+        .group_by(Commit.author_login)
+        .order_by(func.count(Commit.id).desc())
+        .limit(30)
+    )
+    devs = devs_result.all()
+
+    # Get review interactions (edges)
+    interactions_result = await db.execute(
+        select(PullRequest.author_login, PRComment.author_login, func.count(PRComment.id).label("weight"))
+        .join(PRComment, PRComment.pr_id == PullRequest.id)
+        .where(PullRequest.repo_id == repo_id)
+        .where(PullRequest.author_login.isnot(None))
+        .where(PRComment.author_login.isnot(None))
+        .where(PullRequest.author_login != PRComment.author_login)
+        .group_by(PullRequest.author_login, PRComment.author_login)
+    )
+    interactions = interactions_result.all()
+
+    nodes = [
+        {"id": d[0], "commit_count": d[1]}
+        for d in devs
+    ]
+    edges = [
+        {"source": i[0], "target": i[1], "weight": i[2]}
+        for i in interactions
+    ]
+
+    return {"nodes": nodes, "edges": edges}
+
+
+@router.post("/{repo_id}/graph/build")
+async def build_repo_graph(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Build the multi-layer graph for a repository in Neo4j"""
     # Verify user has access to this repo
     result = await db.execute(
         select(Repo).join(UserRepo).where(
@@ -327,8 +494,70 @@ async def get_repo_churn_analysis(repo_id: str, user: User = Depends(get_current
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    # Get ChurnBusFactorAnalyzer instance and analyze
-    analyzer = await get_churn_analyzer(db)
-    churn_data = await analyzer.analyze_repository(repo_id)
+    # Build the graph
+    chronos = await get_chronos_graph(db)
+    stats = await chronos.build_graph(repo_id)
+    
+    return {"status": "built", "stats": stats}
 
-    return churn_data
+
+@router.get("/{repo_id}/graph/stmc")
+async def get_stmc_score(repo_id: str, file1: str, file2: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Get STMC coupling score between two files"""
+    # Verify user has access
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(
+            Repo.id == repo_id,
+            UserRepo.user_id == user.id
+        )
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    chronos = await get_chronos_graph(db)
+    score = await chronos.get_stmc_score(repo_id, file1, file2)
+    
+    return {"file1": file1, "file2": file2, "stmc_score": score}
+
+
+@router.get("/{repo_id}/reviewers/suggest")
+async def suggest_reviewers(repo_id: str, pr_id: str = None, exclude: str = None, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Suggest reviewers for a PR based on expertise"""
+    # Verify user has access
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(
+            Repo.id == repo_id,
+            UserRepo.user_id == user.id
+        )
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    exclude_list = exclude.split(",") if exclude else []
+    
+    chronos = await get_chronos_graph(db)
+    suggestions = await chronos.suggest_reviewers(repo_id, pr_id, exclude_list)
+    
+    return {"suggestions": suggestions}
+
+
+@router.get("/{repo_id}/developer/{login}/expertise")
+async def get_developer_expertise(repo_id: str, login: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Get expertise profile for a developer"""
+    # Verify user has access
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(
+            Repo.id == repo_id,
+            UserRepo.user_id == user.id
+        )
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    chronos = await get_chronos_graph(db)
+    expertise = await chronos.get_developer_expertise(repo_id, login)
+    
+    return expertise

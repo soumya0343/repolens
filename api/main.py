@@ -10,8 +10,18 @@ from prs import router as prs_router
 from ws_manager import router as ws_router
 from internal import router as internal_router
 from internal_ci import router as internal_ci_router
- 
+from chat import router as chat_router
+from database import engine, Base
+import models  # ensure all model classes are registered with Base
+
 app = FastAPI()
+
+
+@app.on_event("startup")
+async def on_startup():
+    """Create any missing tables on startup (idempotent — won't touch existing tables)."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
  
 app.include_router(internal_router)
 app.include_router(internal_ci_router)
@@ -28,6 +38,7 @@ app.include_router(auth_router)
 app.include_router(repos_router)
 app.include_router(prs_router)
 app.include_router(ws_router)
+app.include_router(chat_router)
 
 @app.get("/health")
 def health_check():

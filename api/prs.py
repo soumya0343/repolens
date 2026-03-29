@@ -1,13 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import desc
 import jwt
 import os
 
 from database import get_db
-from models import User, Repo, UserRepo, PullRequest, PRComment
+from models import User, Repo, UserRepo, PullRequest, PRComment, Commit, CommitFile
+
+from llm_explainer import get_llm_explainer
+from risk_scorer import get_unified_risk_scorer
 
 router = APIRouter(prefix="/prs", tags=["pull-requests"])
+
 JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key")
 
 async def get_current_user(authorization: str = Header(None), db: AsyncSession = Depends(get_db)):
@@ -144,3 +149,59 @@ async def get_pull_request_details(
             for comment in comments
         ]
     }
+
+
+@router.post("/{pr_id}/explain")
+async def explain_pr_risk(
+    pr_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get LLM explanation for PR risk"""
+    # Verify access
+    result = await db.execute(
+        select(PullRequest, Repo)
+        .join(Repo, PullRequest.repo_id == Repo.id)
+        .join(UserRepo, Repo.id == UserRepo.repo_id)
+        .where(
+            PullRequest.id == pr_id,
+            UserRepo.user_id == user.id
+        )
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Pull request not found or access denied")
+
+    pr, repo = row
+
+    # Get real risk data from the unified scorer
+    scorer = await get_unified_risk_scorer(db)
+    risk_result = await scorer.calculate_repo_risk(str(pr.repo_id))
+    breakdown = risk_result.get("breakdown", {})
+    risk_data = {
+        "coupling":      breakdown.get("coupling", 0) / 100,
+        "architecture":  breakdown.get("architecture", 0) / 100,
+        "bus_factor":    breakdown.get("bus_factor", 0) / 100,
+        "ci":            breakdown.get("ci", 0) / 100,
+        "collaboration": breakdown.get("collaboration", 0) / 100,
+    }
+
+    # Get real files changed in recent commits for this repo
+    files_result = await db.execute(
+        select(CommitFile.file_path)
+        .join(Commit, Commit.id == CommitFile.commit_id)
+        .where(Commit.repo_id == pr.repo_id)
+        .order_by(desc(Commit.committed_date))
+        .limit(50)
+    )
+    files = list(dict.fromkeys(row[0] for row in files_result.all()))[:10]
+    pr_details = {"title": pr.title, "files": files}
+
+    explainer = await get_llm_explainer()
+    explanation = await explainer.explain_risk(repo.name, pr_details, risk_data)
+
+    # Save explanation to DB
+    pr.explanation = explanation
+    await db.commit()
+
+    return explanation

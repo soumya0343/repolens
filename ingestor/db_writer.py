@@ -52,7 +52,46 @@ async def bulk_insert_commits(db: AsyncSession, commits: list[dict]):
         null=''
     )
     print(f"Bulk insert complete. Result: {result}")
+
+
+async def bulk_insert_commit_files(db: AsyncSession, commit_files: list[dict]):
+    """
+    Bulk insert commit files using PostgreSQL COPY.
+    commit_files: list of dicts with keys: id, commit_id, file_path, additions, deletions, change_type
+    """
+    if not commit_files:
+        return
     
+    connection = await db.connection()
+    raw_conn = await connection.get_raw_connection()
+    
+    buffer = io.StringIO()
+    for cf in commit_files:
+        row = "\t".join([
+            str(cf['id']),
+            str(cf['commit_id']),
+            str(cf['file_path']),
+            str(cf.get('additions', 0)),
+            str(cf.get('deletions', 0)),
+            str(cf.get('change_type', 'MODIFIED')),
+        ]) + "\n"
+        buffer.write(row)
+    
+    buffer.seek(0)
+    buffer_bytes = io.BytesIO(buffer.getvalue().encode('utf-8'))
+    buffer_bytes.seek(0)
+    
+    result = await raw_conn.driver_connection.copy_to_table(
+        'commit_files',
+        source=buffer_bytes,
+        columns=['id', 'commit_id', 'file_path', 'additions', 'deletions', 'change_type'],
+        format='csv',
+        delimiter='\t',
+        null=''
+    )
+    print(f"Commit files bulk insert complete. Result: {result}")
+    
+
 async def bulk_insert_prs(db: AsyncSession, prs: list[dict]):
     # TBD
     pass

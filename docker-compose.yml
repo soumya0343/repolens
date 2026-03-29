@@ -41,6 +41,10 @@ services:
     container_name: repolens-api
     env_file:
       - .env
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=repolens_password
     ports:
       - "8000:8000"
     volumes:

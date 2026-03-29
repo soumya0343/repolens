@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import and_, func
 
-from models import Commit, Repo
+from models import Commit, CommitFile, Repo
 
 
 class CoChangeOracle:
@@ -65,14 +65,24 @@ class CoChangeOracle:
         return self._format_for_frontend(coupling_scores)
 
     async def _get_commits(self, repo_id: str) -> List[Dict]:
-        """Fetch all commits for a repository with file changes."""
-        result = await self.db.execute(
+        """Fetch all commits for a repository with their actual changed files."""
+        commits_result = await self.db.execute(
             select(Commit).where(Commit.repo_id == repo_id)
         )
-        commits = result.scalars().all()
+        commits = commits_result.scalars().all()
+        if not commits:
+            return []
 
-        # For now, we'll work with commit messages to infer file changes
-        # TODO: Add proper file change tracking in the database
+        # Batch-fetch all file changes for this repo's commits in one query
+        files_result = await self.db.execute(
+            select(CommitFile.commit_id, CommitFile.file_path)
+            .join(Commit, Commit.id == CommitFile.commit_id)
+            .where(Commit.repo_id == repo_id)
+        )
+        files_by_commit: Dict[str, List[str]] = defaultdict(list)
+        for row in files_result.all():
+            files_by_commit[str(row[0])].append(row[1])
+
         return [
             {
                 "id": str(commit.id),
@@ -80,30 +90,10 @@ class CoChangeOracle:
                 "message": commit.message or "",
                 "author_email": commit.author_email,
                 "committed_date": commit.committed_date,
-                "files_changed": self._extract_files_from_message(commit.message or "")
+                "files_changed": files_by_commit.get(str(commit.id), []),
             }
             for commit in commits
         ]
-
-    def _extract_files_from_message(self, message: str) -> List[str]:
-        """Extract file paths from commit message (simplified approach)."""
-        # This is a placeholder - in real implementation, we'd have file change data
-        # For now, return mock file changes based on message content
-        files = []
-        if "api" in message.lower():
-            files.append("src/api.py")
-        if "model" in message.lower():
-            files.append("src/models.py")
-        if "util" in message.lower() or "helper" in message.lower():
-            files.append("src/utils.py")
-        if "test" in message.lower():
-            files.append("tests/test_main.py")
-
-        # Always include at least one file
-        if not files:
-            files = ["src/main.py"]
-
-        return files
 
     def _group_commits_by_time(self, commits: List[Dict]) -> Dict[str, List[Dict]]:
         """Group commits into time windows and apply DERAR decay."""
@@ -277,12 +267,5 @@ class CoChangeOracle:
         return {"nodes": nodes, "links": links}
 
 
-# Global instance for background processing
-cochange_oracle = None
-
 async def get_cochange_oracle(db: AsyncSession) -> CoChangeOracle:
-    """Get or create CoChangeOracle instance."""
-    global cochange_oracle
-    if cochange_oracle is None:
-        cochange_oracle = CoChangeOracle(db)
-    return cochange_oracle
+    return CoChangeOracle(db)

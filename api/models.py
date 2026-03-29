@@ -120,6 +120,17 @@ class CIRun(Base):
     analysis_results = Column(JSON, nullable=True)
     
     
+class CommitFile(Base):
+    """Tracks files changed in each commit for fine-grained analysis"""
+    __tablename__ = "commit_files"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    commit_id = Column(UUID(as_uuid=True), ForeignKey("commits.id", ondelete="CASCADE"), index=True)
+    file_path = Column(String, index=True)
+    additions = Column(Integer, default=0)
+    deletions = Column(Integer, default=0)
+    change_type = Column(String) # ADDED, MODIFIED, DELETED
+
 class ArchAnalysis(Base):
     __tablename__ = 'arch_analysis'
     

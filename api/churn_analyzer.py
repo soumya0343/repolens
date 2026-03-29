@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import and_, func, desc
 
-from models import Commit, Repo
+from models import Commit, CommitFile, Repo
 
 
 class ChurnBusFactorAnalyzer:
@@ -146,59 +146,42 @@ class ChurnBusFactorAnalyzer:
         }
 
     async def _analyze_file_ownership(self, repo_id: str) -> List[Dict]:
-        """Analyze ownership patterns for individual files."""
-        # This is a simplified analysis since we don't have detailed file change data yet
-        # In a real implementation, we'd analyze file-level changes
+        """Analyze ownership patterns for individual files using CommitFile data."""
+        result = await self.db.execute(
+            select(CommitFile.file_path, Commit.author_login, func.count(CommitFile.id).label("cnt"))
+            .join(Commit, Commit.id == CommitFile.commit_id)
+            .where(Commit.repo_id == repo_id, Commit.author_login.isnot(None))
+            .group_by(CommitFile.file_path, Commit.author_login)
+            .order_by(CommitFile.file_path, func.count(CommitFile.id).desc())
+        )
+        rows = result.all()
 
-        # For now, return mock data based on commit patterns
-        contributor_stats = await self._get_contributor_stats(repo_id)
-
-        if not contributor_stats:
+        if not rows:
             return []
 
-        # Mock file ownership analysis
-        files = [
-            "src/main.py",
-            "src/api.py",
-            "src/models.py",
-            "src/utils.py",
-            "tests/test_main.py",
-            "README.md"
-        ]
+        # Group contributions by file
+        files_dict: dict = defaultdict(list)
+        for file_path, author, cnt in rows:
+            files_dict[file_path].append({"contributor": author, "commits": cnt})
 
         file_ownership = []
-
-        for file_path in files:
-            # Simulate ownership based on contributor activity
-            # In real implementation, this would be based on actual file changes
-            top_contributors = list(contributor_stats.keys())[:3]  # Top 3 contributors
-
-            ownership = []
-            remaining_share = 1.0
-
-            for i, contributor in enumerate(top_contributors):
-                if i == len(top_contributors) - 1:
-                    share = remaining_share
-                else:
-                    # Distribute ownership with decreasing shares
-                    share = remaining_share * (0.7 ** i)
-                    remaining_share -= share
-
-                ownership.append({
-                    "contributor": contributor,
-                    "ownership_percentage": share,
-                    "commits_to_file": max(1, int(share * 20))  # Mock commit count
-                })
-
-            # Calculate bus factor for this file
-            ownership_shares = [owner["ownership_percentage"] for owner in ownership]
-            file_hhi = sum(share ** 2 for share in ownership_shares)
-
+        for file_path, contribs in list(files_dict.items())[:20]:  # top 20 most active files
+            total = sum(c["commits"] for c in contribs)
+            ownership = [
+                {
+                    "contributor": c["contributor"],
+                    "ownership_percentage": c["commits"] / total,
+                    "commits_to_file": c["commits"],
+                }
+                for c in contribs[:5]  # top 5 contributors per file
+            ]
+            shares = [o["ownership_percentage"] for o in ownership]
+            file_hhi = sum(s ** 2 for s in shares)
             file_ownership.append({
                 "file_path": file_path,
                 "ownership": ownership,
                 "bus_factor_hhi": file_hhi,
-                "risk_level": "high" if file_hhi > self.bus_factor_threshold else "medium" if file_hhi > 0.3 else "low"
+                "risk_level": "high" if file_hhi > self.bus_factor_threshold else "medium" if file_hhi > 0.3 else "low",
             })
 
         return file_ownership
@@ -257,12 +240,5 @@ class ChurnBusFactorAnalyzer:
         }
 
 
-# Global instance for background processing
-churn_analyzer = None
-
 async def get_churn_analyzer(db: AsyncSession) -> ChurnBusFactorAnalyzer:
-    """Get or create ChurnBusFactorAnalyzer instance."""
-    global churn_analyzer
-    if churn_analyzer is None:
-        churn_analyzer = ChurnBusFactorAnalyzer(db)
-    return churn_analyzer
+    return ChurnBusFactorAnalyzer(db)

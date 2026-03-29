@@ -2,14 +2,16 @@ import os
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
+import asyncio
 import uuid
 import httpx
 from datetime import datetime, timezone
-from github_client import fetch_commits_batch
+from arq.connections import RedisSettings
+from github_client import fetch_commits_batch, fetch_commit_files
 from database import AsyncSessionLocal
 from models import Repo
 from sqlalchemy.future import select
-from db_writer import bulk_insert_commits
+from db_writer import bulk_insert_commits, bulk_insert_commit_files
 from models import Commit
 
 async def run_backfill_job(ctx, repo_id: str, github_token: str):
@@ -81,6 +83,35 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                     print(f"Inserting {len(commits_to_insert)} new commits")
                     # Bulk insert into PostgreSQL using asyncpg copy
                     await bulk_insert_commits(db, commits_to_insert)
+
+                    # Now fetch files for each new commit
+                    print(f"Fetching files for {len(commits_to_insert)} commits...")
+                    commit_files_to_insert = []
+
+                    for commit_data in commits_to_insert:
+                        try:
+                            files = await fetch_commit_files(
+                                github_token, owner, name, commit_data['oid']
+                            )
+                            for f in files:
+                                commit_files_to_insert.append({
+                                    'id': str(uuid.uuid4()),
+                                    'commit_id': commit_data['id'],
+                                    'file_path': f['path'],
+                                    'additions': f.get('additions', 0),
+                                    'deletions': f.get('deletions', 0),
+                                    'change_type': f.get('change_type', 'MODIFIED'),
+                                })
+                            await asyncio.sleep(0.1)  # throttle to avoid GitHub rate limits
+                        except Exception as e:
+                            print(f"Error fetching files for commit {commit_data['oid']}: {e}")
+
+                    if commit_files_to_insert:
+                        print(f"Inserting {len(commit_files_to_insert)} commit files")
+                        try:
+                            await bulk_insert_commit_files(db, commit_files_to_insert)
+                        except Exception as e:
+                            print(f"Error inserting commit files (commits still saved): {e}")
                 else:
                     print("No new commits to insert")
 
@@ -124,6 +155,5 @@ class WorkerSettings:
     functions = [run_backfill_job]
     on_startup = startup
     on_shutdown = shutdown
-    # ARQ defaults to looking for Redis on localhost:6379 natively.
-    # In docker it will use the `redis` host.
-    # redis_settings = RedisSettings(host='localhost')
+    queue_name = os.getenv('BACKFILL_QUEUE', 'arq:backfill')
+    redis_settings = RedisSettings(host=os.getenv('REDIS_HOST', 'localhost'))

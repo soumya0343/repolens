@@ -11,3 +11,6 @@ greenlet
 arq
 redis
 websockets
+neo4j
+groq>=0.9.0
+google-generativeai>=0.8.0

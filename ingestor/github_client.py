@@ -1,6 +1,7 @@
 import httpx
 
 GRAPHQL_URL = "https://api.github.com/graphql"
+REST_URL = "https://api.github.com"
 
 BACKFILL_COMMITS_QUERY = """
 query ($owner: String!, $name: String!, $cursor: String) {
@@ -8,7 +9,7 @@ query ($owner: String!, $name: String!, $cursor: String) {
     defaultBranchRef {
       target {
         ... on Commit {
-          history(first: 100, after: $cursor) {
+          history(first: 50, after: $cursor) {
             pageInfo {
               hasNextPage
               endCursor
@@ -34,6 +35,7 @@ query ($owner: String!, $name: String!, $cursor: String) {
 }
 """
 
+
 async def fetch_commits_batch(token: str, owner: str, name: str, cursor: str = None):
     headers = {
         "Authorization": f"Bearer {token}",
@@ -55,3 +57,32 @@ async def fetch_commits_batch(token: str, owner: str, name: str, cursor: str = N
         )
         response.raise_for_status()
         return response.json()
+
+
+async def fetch_commit_files(token: str, owner: str, name: str, commit_sha: str):
+    """Fetch files changed in a specific commit using GitHub REST API"""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    url = f"{REST_URL}/repos/{owner}/{name}/commits/{commit_sha}"
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=30.0)
+        if response.status_code == 404:
+            return []  # Commit might not exist or be a merge commit
+        response.raise_for_status()
+        data = response.json()
+        
+        # Extract file information
+        files = []
+        for f in data.get('files', []):
+            files.append({
+                'path': f['filename'],
+                'additions': f.get('additions', 0),
+                'deletions': f.get('deletions', 0),
+                'change_type': f.get('status', 'modified').upper()  # added, removed, modified
+            })
+        
+        return files
