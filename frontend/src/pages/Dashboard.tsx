@@ -175,11 +175,19 @@ const Dashboard: React.FC = () => {
   const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
   // Chat
-  const [chatOpen,    setChatOpen]    = useState(false);
-  const [chatInput,   setChatInput]   = useState('');
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-  const [chatLoading, setChatLoading] = useState(false);
+  const [chatOpen,        setChatOpen]        = useState(false);
+  const [chatInput,       setChatInput]       = useState('');
+  const [chatHistory,     setChatHistory]     = useState<ChatMessage[]>([]);
+  const [chatLoading,     setChatLoading]     = useState(false);
+  const [chatRawHistory,  setChatRawHistory]  = useState<Record<string, any>[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (chatOpen) {
+      chatInputRef.current?.focus();
+    }
+  }, [chatOpen]);
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -271,34 +279,67 @@ const Dashboard: React.FC = () => {
     });
   };
 
-  const sendChat = async () => {
-    if (!chatInput.trim() || !repoId) return;
-    const userMsg: ChatMessage = { role: 'user', content: chatInput };
-    const newHistory = [...chatHistory, userMsg];
-    setChatHistory(newHistory);
+  const sendChat = async (message?: string) => {
+    if (chatLoading) return;
+    const raw = message ?? chatInput;
+    const trimmed = raw.trim();
+    if (!trimmed || !repoId) return;
+    const userMsg: ChatMessage = { role: 'user', content: trimmed };
+    setChatHistory(prev => [...prev, userMsg]);
     setChatInput('');
     setChatLoading(true);
+    chatInputRef.current?.focus();
+
+    const historyPayload = chatRawHistory.slice(-10);
+    const appendAssistantToRawHistory = (assistantEntry: ChatMessage) => {
+      const next = [...historyPayload, userMsg, assistantEntry];
+      setChatRawHistory(next.slice(-50));
+      return assistantEntry;
+    };
+
     try {
       const r = await fetch(`${API_BASE_URL}/repos/${repoId}/chat`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: chatInput,
-          history: newHistory.slice(-10).map(m => ({ role: m.role, content: m.content })),
+          message: trimmed,
+          history: historyPayload,
         }),
       });
       if (r.ok) {
         const data = await r.json();
-        setChatHistory(prev => [...prev, { role: 'assistant', content: data.response || 'No response.' }]);
+        const assistantContent = data.response || 'No response.';
+        const assistantEntry: ChatMessage = { role: 'assistant', content: assistantContent };
+        setChatHistory(prev => [...prev, assistantEntry]);
+        if (Array.isArray(data.history)) {
+          setChatRawHistory(data.history.slice(-50));
+        } else {
+          appendAssistantToRawHistory(assistantEntry);
+        }
       } else {
-        setChatHistory(prev => [...prev, { role: 'assistant', content: 'Error: Could not get a response.' }]);
+        const assistantEntry = appendAssistantToRawHistory({
+          role: 'assistant',
+          content: 'Error: Could not get a response.',
+        });
+        setChatHistory(prev => [...prev, assistantEntry]);
       }
     } catch {
-      setChatHistory(prev => [...prev, { role: 'assistant', content: 'Network error.' }]);
+      const assistantEntry = appendAssistantToRawHistory({
+        role: 'assistant',
+        content: 'Network error.',
+      });
+      setChatHistory(prev => [...prev, assistantEntry]);
     } finally {
       setChatLoading(false);
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     }
+  };
+
+  const handleQuickQuestion = (question: string) => {
+    setChatOpen(true);
+    setChatInput(question);
+    chatInputRef.current?.focus();
+    sendChat(question);
   };
 
   const explainPR = async (prId: string) => {
@@ -783,7 +824,7 @@ const Dashboard: React.FC = () => {
               <div className="text-center mt-8">
                 <p className="mb-3" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: '0.8rem' }}>Ask me anything about this repository:</p>
                 {["What are the riskiest files?", "Which tests are flaky?", "Who should review PRs in the auth module?"].map(q => (
-                  <button key={q} onClick={() => { setChatInput(q); }}
+                  <button key={q} onClick={() => handleQuickQuestion(q)}
                           className="block mx-auto mb-2 text-left transition-colors hover:underline"
                           style={{ color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: '0.78rem', background: 'none', border: 'none', cursor: 'pointer' }}>
                     "{q}"
@@ -808,12 +849,12 @@ const Dashboard: React.FC = () => {
             <div ref={chatEndRef} />
           </div>
           <div className="p-3 flex gap-2" style={{ borderTop: '1px solid var(--border)' }}>
-            <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+            <input ref={chatInputRef} value={chatInput} onChange={e => setChatInput(e.target.value)}
                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
                    placeholder="Ask about this repo…"
                    className="flex-1 text-sm rounded-md px-3 py-2 focus:outline-none"
                    style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--sans)' }} />
-            <button onClick={sendChat} disabled={!chatInput.trim() || chatLoading}
+            <button onClick={() => sendChat()} disabled={!chatInput.trim() || chatLoading}
                     className="px-3 py-2 text-sm font-semibold rounded-md disabled:opacity-50 transition-opacity hover:opacity-85"
                     style={{ background: 'var(--accent)', color: '#0d1209', border: 'none', cursor: 'pointer' }}>
               Send
