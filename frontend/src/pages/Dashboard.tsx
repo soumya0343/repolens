@@ -23,8 +23,8 @@ type Tab = 'overview' | 'files' | 'prs' | 'coupling' | 'releases' | 'ci' | 'team
 
 const riskColor  = (s: number) => s >= 75 ? 'text-red-400'    : s >= 55 ? 'text-orange-400' : s >= 30 ? 'text-yellow-400' : 'text-green-400';
 const riskBg     = (s: number) => s >= 75 ? 'bg-red-950 text-red-400'    : s >= 55 ? 'bg-orange-950 text-orange-400' : s >= 30 ? 'bg-yellow-950 text-yellow-400' : 'bg-green-950 text-green-400';
-const ratingColor = (r: string) => ({ elite: 'text-green-400', high: 'text-lime-400', medium: 'text-yellow-400', low: 'text-red-400', unknown: 'text-neutral-500' }[r] ?? 'text-neutral-500');
-const ratingBg    = (r: string) => ({ elite: 'bg-green-950 text-green-400', high: 'bg-lime-950 text-lime-400', medium: 'bg-yellow-950 text-yellow-400', low: 'bg-red-950 text-red-400', unknown: 'bg-neutral-900 text-neutral-500' }[r] ?? 'bg-neutral-900 text-neutral-500');
+const ratingColor = (r: string) => ({ elite: 'text-green-400', high: 'text-emerald-400', medium: 'text-yellow-400', low: 'text-red-400', unknown: 'text-neutral-500' }[r] ?? 'text-neutral-500');
+const ratingBg    = (r: string) => ({ elite: 'bg-green-950 text-green-400', high: 'bg-lime-950 text-emerald-400', medium: 'bg-yellow-950 text-yellow-400', low: 'bg-red-950 text-red-400', unknown: 'bg-neutral-900 text-neutral-500' }[r] ?? 'bg-neutral-900 text-neutral-500');
 
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` });
 
@@ -39,9 +39,11 @@ async function apiFetch<T>(url: string): Promise<T | null> {
 // ── Sub-components ────────────────────────────────────────────────────────
 
 const StatCard: React.FC<{ label: string; value: string | number; sub?: string }> = ({ label, value, sub }) => (
-  <div className="rounded-lg p-5 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)', boxShadow: 'var(--shadow)' }}>
+  <div className="rounded-lg p-5 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)', borderTop: '2px solid var(--accent)', boxShadow: 'var(--shadow)', transition: 'transform 0.15s ease, box-shadow 0.15s ease' }}
+       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-2px)'; (e.currentTarget as HTMLElement).style.boxShadow = '0 16px 32px rgba(0,0,0,0.5)'; }}
+       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = ''; (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow)'; }}>
     <p className="text-xs font-medium uppercase tracking-widest" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>{label}</p>
-    <p className="text-2xl font-bold mt-2" style={{ color: 'var(--text-h)', fontFamily: 'var(--heading)' }}>{value}</p>
+    <p className="text-2xl font-bold mt-2" style={{ color: 'var(--text-h)', fontFamily: 'var(--heading)', letterSpacing: '-0.01em' }}>{value}</p>
     {sub && <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
   </div>
 );
@@ -60,7 +62,9 @@ const RiskBar: React.FC<{ label: string; value: number; max?: number }> = ({ lab
 );
 
 const DoraCard: React.FC<{ title: string; value: number | null; unit: string; rating: string; label: string }> = ({ title, value, unit, rating, label }) => (
-  <div className="rounded-lg p-5 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)', boxShadow: 'var(--shadow)' }}>
+  <div className="rounded-lg p-5 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)', borderTop: '2px solid var(--border)', boxShadow: 'var(--shadow)', transition: 'transform 0.15s ease' }}
+       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-2px)'; }}
+       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = ''; }}>
     <p className="text-xs font-medium uppercase tracking-widest" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>{title}</p>
     <p className="text-2xl font-bold mt-2" style={{ color: 'var(--text-h)', fontFamily: 'var(--heading)' }}>
       {value !== null && value !== undefined ? `${value} ${unit}` : '—'}
@@ -92,14 +96,14 @@ const TeamGraph: React.FC<{ nodes: TeamNode[]; edges: TeamEdge[] }> = ({ nodes, 
         const s = positions[e.source], t = positions[e.target];
         if (!s || !t) return null;
         return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                     stroke="#4ade80" strokeWidth={Math.min(e.weight, 4)} strokeOpacity={0.5} />;
+                     stroke="#34d399" strokeWidth={Math.min(e.weight, 4)} strokeOpacity={0.5} />;
       })}
       {nodes.map(n => {
         const p = positions[n.id];
         const r = 8 + (n.commit_count / maxCommits) * 14;
         return (
           <g key={n.id}>
-            <circle cx={p.x} cy={p.y} r={r} fill="#84cc16" fillOpacity={0.85} />
+            <circle cx={p.x} cy={p.y} r={r} fill="#34d399" fillOpacity={0.85} />
             <text x={p.x} y={p.y + r + 12} textAnchor="middle" fontSize={11} fill="#e2ddd5">
               {n.id.length > 12 ? n.id.slice(0, 10) + '…' : n.id}
             </text>
@@ -131,7 +135,7 @@ const CouplingGraph: React.FC<{ nodes: CouplingNode[]; links: CouplingLink[] }> 
         const s = positions[l.source], t = positions[l.target];
         if (!s || !t) return null;
         return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                     stroke="#84cc16" strokeWidth={Math.max(1, l.value * 6)} strokeOpacity={0.4} />;
+                     stroke="#34d399" strokeWidth={Math.max(1, l.value * 6)} strokeOpacity={0.4} />;
       })}
       {nodes.map(n => {
         const p = positions[n.id];
@@ -139,7 +143,7 @@ const CouplingGraph: React.FC<{ nodes: CouplingNode[]; links: CouplingLink[] }> 
         const short = n.id.includes('/') ? n.id.split('/').pop()! : n.id;
         return (
           <g key={n.id}>
-            <circle cx={p.x} cy={p.y} r={8} fill="#84cc16" fillOpacity={0.85} />
+            <circle cx={p.x} cy={p.y} r={8} fill="#34d399" fillOpacity={0.85} />
             <text x={p.x} y={p.y + 20} textAnchor="middle" fontSize={10} fill="#e2ddd5">
               {short.length > 16 ? short.slice(0, 14) + '…' : short}
             </text>
@@ -378,10 +382,52 @@ const Dashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg)' }}>
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 mx-auto" style={{ borderWidth: '2px', borderStyle: 'solid', borderColor: 'var(--border)', borderBottomColor: 'var(--accent)' }} />
-          <p className="mt-4 text-sm" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>Loading dashboard…</p>
+      <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
+        {/* Skeleton header */}
+        <div className="border-b" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+          <div className="max-w-6xl mx-auto px-5 sm:px-8 lg:px-12 py-4 flex justify-between items-center">
+            <div>
+              <div className="skeleton h-7 w-32 mb-2" />
+              <div className="skeleton h-3.5 w-44" />
+            </div>
+            <div className="flex gap-2">
+              <div className="skeleton h-9 w-28 rounded-md" />
+              <div className="skeleton h-9 w-24 rounded-md" />
+            </div>
+          </div>
+        </div>
+        <div className="max-w-6xl mx-auto px-5 sm:px-8 lg:px-12 pt-6">
+          {/* Skeleton tabs */}
+          <div className="flex gap-6 border-b mb-6" style={{ borderColor: 'var(--border)' }}>
+            {[80, 52, 108, 72, 76, 84, 56, 72].map((w, i) => (
+              <div key={i} className="skeleton h-3.5 mb-3 rounded" style={{ width: w }} />
+            ))}
+          </div>
+          {/* Skeleton stat cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 stagger">
+            {[0,1,2,3].map(i => (
+              <div key={i} className="rounded-lg p-5 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
+                <div className="skeleton h-3 w-20 mb-3" />
+                <div className="skeleton h-8 w-16" />
+              </div>
+            ))}
+          </div>
+          {/* Skeleton risk panel */}
+          <div className="rounded-lg p-6 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
+            <div className="flex justify-between mb-6">
+              <div className="skeleton h-4 w-40" />
+              <div className="skeleton h-8 w-20" />
+            </div>
+            {[0,1,2,3,4].map(i => (
+              <div key={i} className="mb-4">
+                <div className="flex justify-between mb-2">
+                  <div className="skeleton h-3 w-24" />
+                  <div className="skeleton h-3 w-12" />
+                </div>
+                <div className="skeleton h-1.5 w-full rounded-full" />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -399,13 +445,13 @@ const Dashboard: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen relative" style={{ background: 'var(--bg)' }}>
+    <div className="min-h-screen relative animate-fade-in" style={{ background: 'var(--bg)' }}>
       {/* Header */}
       <header className="border-b sticky top-0 z-40" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-6xl mx-auto px-5 sm:px-8 lg:px-12">
           <div className="flex justify-between items-center py-4">
             <div>
-              <h1 className="text-2xl font-bold" style={{ fontFamily: 'var(--heading)', color: 'var(--text-h)', letterSpacing: '-0.03em' }}>RepoLens</h1>
+              <h1 className="text-2xl font-bold" style={{ fontFamily: 'var(--heading)', color: 'var(--text-h)', letterSpacing: '0em' }}>RepoLens</h1>
               {repoData && <p style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>{repoData.owner}/{repoData.name}</p>}
             </div>
             <div className="flex gap-2">
@@ -424,7 +470,7 @@ const Dashboard: React.FC = () => {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="max-w-6xl mx-auto px-5 sm:px-8 lg:px-12 py-6">
         {/* Tabs */}
         <div className="border-b mb-6" style={{ borderColor: 'var(--border)' }}>
           <nav className="-mb-px flex space-x-1 overflow-x-auto">
@@ -444,7 +490,7 @@ const Dashboard: React.FC = () => {
         {activeTab === 'overview' && (
           <div className="space-y-6">
             {repoData && (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 stagger">
                 <StatCard label="Commits"       value={repoData.stats?.commits ?? 0} />
                 <StatCard label="Pull Requests" value={repoData.stats?.pull_requests ?? 0} />
                 <StatCard label="Open PRs"      value={prsData.filter(p => p.state === 'OPEN').length} />
@@ -454,7 +500,7 @@ const Dashboard: React.FC = () => {
 
             {/* Risk Score */}
             {riskData && (
-              <div className="rounded-lg p-6 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)', boxShadow: 'var(--shadow)' }}>
+              <div className="rounded-lg p-6 border animate-fade-up" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)', boxShadow: 'var(--shadow)', animationDelay: '80ms' }}>
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-base font-semibold" style={{ fontFamily: 'var(--heading)', color: 'var(--text-h)' }}>Unified Risk Score</h2>
                   <span className={`text-3xl font-bold ${riskColor(riskData.score)}`} style={{ fontFamily: 'var(--heading)' }}>{riskData.score}/100</span>
@@ -484,7 +530,7 @@ const Dashboard: React.FC = () => {
             )}
 
             {/* Summary cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 stagger">
               <div className="rounded-lg p-5 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
                 <h3 className="text-xs font-medium uppercase tracking-widest mb-3" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>File Risk Distribution</h3>
                 <div className="space-y-2">
@@ -521,7 +567,7 @@ const Dashboard: React.FC = () => {
 
         {/* ── Files ────────────────────────────────────────────────────── */}
         {activeTab === 'files' && (
-          <div className="overflow-hidden rounded-lg border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
+          <div className="overflow-hidden rounded-lg border animate-fade-up" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
             <table className="min-w-full">
               <thead style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
                 <tr>
@@ -551,7 +597,7 @@ const Dashboard: React.FC = () => {
 
         {/* ── Pull Requests ─────────────────────────────────────────────── */}
         {activeTab === 'prs' && (
-          <div className="space-y-4">
+          <div className="space-y-4 animate-fade-up">
             <div className="overflow-hidden rounded-lg border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
               <table className="min-w-full">
                 <thead style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
@@ -574,7 +620,7 @@ const Dashboard: React.FC = () => {
                             ...(pr.state === 'OPEN'
                               ? { background: 'rgba(74,222,128,0.1)', color: '#4ade80' }
                               : pr.state === 'MERGED'
-                              ? { background: 'rgba(132,204,22,0.1)', color: '#84cc16' }
+                              ? { background: 'rgba(52,211,153,0.1)', color: '#34d399' }
                               : { background: 'var(--surface)', color: 'var(--text-muted)' })
                           }}>{pr.state}</span>
                         </td>
@@ -618,7 +664,7 @@ const Dashboard: React.FC = () => {
 
         {/* ── Coupling ──────────────────────────────────────────────────── */}
         {activeTab === 'coupling' && (
-          <div className="space-y-6">
+          <div className="space-y-6 animate-fade-up">
             <div className="rounded-lg p-6 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
               <h2 className="text-base font-semibold mb-1" style={{ fontFamily: 'var(--heading)', color: 'var(--text-h)' }}>File Coupling Graph</h2>
               <p className="text-xs mb-4" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>Files that change together frequently. Thicker lines = stronger coupling.</p>
@@ -658,7 +704,7 @@ const Dashboard: React.FC = () => {
 
         {/* ── Releases / DORA ───────────────────────────────────────────── */}
         {activeTab === 'releases' && (
-          <div className="space-y-6">
+          <div className="space-y-6 animate-fade-up">
             {doraData ? (
               <>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -672,13 +718,13 @@ const Dashboard: React.FC = () => {
                   <div className="grid grid-cols-2 gap-4" style={{ fontSize: '0.85rem', fontFamily: 'var(--mono)' }}>
                     <div><p className="font-medium mb-2" style={{ color: 'var(--text)' }}>Deployment Frequency</p>
                       <p className="text-green-400">Elite: ≥1/day</p>
-                      <p className="text-lime-400">High: ≥1/week</p>
+                      <p className="text-emerald-400">High: ≥1/week</p>
                       <p className="text-yellow-400">Medium: ≥1/month</p>
                       <p className="text-red-400">Low: &lt;1/month</p>
                     </div>
                     <div><p className="font-medium mb-2" style={{ color: 'var(--text)' }}>Lead Time for Changes</p>
                       <p className="text-green-400">Elite: &lt;1 hour</p>
-                      <p className="text-lime-400">High: &lt;1 day</p>
+                      <p className="text-emerald-400">High: &lt;1 day</p>
                       <p className="text-yellow-400">Medium: &lt;1 week</p>
                       <p className="text-red-400">Low: &gt;1 week</p>
                     </div>
@@ -695,7 +741,7 @@ const Dashboard: React.FC = () => {
 
         {/* ── CI / Tests ────────────────────────────────────────────────── */}
         {activeTab === 'ci' && (
-          <div className="space-y-4">
+          <div className="space-y-4 animate-fade-up">
             <div className="overflow-hidden rounded-lg border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
               <div className="px-6 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
                 <h2 className="text-base font-semibold" style={{ fontFamily: 'var(--heading)', color: 'var(--text-h)' }}>Flaky CI Runs</h2>
@@ -745,7 +791,7 @@ const Dashboard: React.FC = () => {
 
         {/* ── Team ──────────────────────────────────────────────────────── */}
         {activeTab === 'team' && (
-          <div className="space-y-6">
+          <div className="space-y-6 animate-fade-up">
             <div className="rounded-lg p-6 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
               <h2 className="text-base font-semibold mb-1" style={{ fontFamily: 'var(--heading)', color: 'var(--text-h)' }}>Developer Collaboration Graph</h2>
               <p className="text-xs mb-4" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>Node size = commit count. Edges = PR review interactions.</p>
@@ -793,7 +839,7 @@ const Dashboard: React.FC = () => {
 
         {/* ── Settings ──────────────────────────────────────────────────── */}
         {activeTab === 'settings' && (
-          <div className="space-y-6">
+          <div className="space-y-6 animate-fade-up">
             <div className="rounded-lg p-6 border" style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}>
               <h2 className="text-base font-semibold mb-2" style={{ fontFamily: 'var(--heading)', color: 'var(--text-h)' }}>Risk Score Weights</h2>
               <p className="text-sm mb-6" style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: '0.83rem' }}>Adjust how much each signal contributes to the unified risk score. Values are automatically normalised.</p>
@@ -806,7 +852,7 @@ const Dashboard: React.FC = () => {
                     </div>
                     <input type="range" min={0} max={100} value={Math.round(v * 100)}
                            onChange={e => setRepoConfig(prev => ({ ...prev, [k]: parseInt(e.target.value) / 100 }))}
-                           className="w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-lime-500"
+                           className="w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-emerald-400"
                            style={{ background: 'var(--border)' }} />
                   </div>
                 ))}

@@ -1,28 +1,28 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --bg:              #0d1209;
-  --surface:         #121710;
-  --surface-raised:  #1a2115;
-  --border:          #242e1c;
-  --text:            #e2ddd5;
-  --text-muted:      #7a7d6f;
-  --text-h:          #eeeae2;
-  --accent:          #84cc16;
-  --accent-bg:       rgba(132, 204, 22, 0.08);
-  --accent-border:   rgba(132, 204, 22, 0.3);
-  --success:         #4ade80;
+  --bg:              #0b0f0d;
+  --surface:         #111714;
+  --surface-raised:  #192219;
+  --border:          #263327;
+  --text:            #dce8e2;
+  --text-muted:      #7a9188;
+  --text-h:          #e8f5ef;
+  --accent:          #34d399;
+  --accent-bg:       rgba(52, 211, 153, 0.08);
+  --accent-border:   rgba(52, 211, 153, 0.25);
+  --success:         #34d399;
   --warning:         #fbbf24;
   --danger:          #f87171;
   --code-bg:         #161c12;
   --shadow:          rgba(0,0,0,0.5) 0 10px 20px -4px, rgba(0,0,0,0.3) 0 4px 8px -2px;
 
   --sans:    'IBM Plex Sans', system-ui, sans-serif;
-  --heading: 'Fraunces', Georgia, serif;
+  --heading: 'Syne', system-ui, sans-serif;
   --mono:    'IBM Plex Mono', 'Courier New', monospace;
 
   font: 17px/150% var(--sans);
@@ -61,14 +61,14 @@ html, body {
 
 h1, h2, h3 {
   font-family: var(--heading);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-h);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
 }
 
-h1 { font-size: 2.8rem; margin: 0 0 0.5rem; }
-h2 { font-size: 1.5rem; margin: 0 0 0.5rem; }
-h3 { font-size: 1.1rem; margin: 0 0 0.25rem; }
+h1 { font-size: 2.6rem; margin: 0 0 0.5rem; }
+h2 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+h3 { font-size: 1rem; margin: 0 0 0.25rem; }
 
 p { margin: 0; }
 
@@ -84,6 +84,53 @@ code {
   padding: 2px 6px;
 }
 
+/* ── Animations ───────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.35s ease both;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.25s ease both;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-raised) 25%,
+    #2a4038 50%,
+    var(--surface-raised) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 6px;
+}
+
+/* Staggered card children */
+.stagger > * { animation: fadeUp 0.35s ease both; }
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 60ms; }
+.stagger > *:nth-child(3) { animation-delay: 120ms; }
+.stagger > *:nth-child(4) { animation-delay: 180ms; }
+.stagger > *:nth-child(5) { animation-delay: 240ms; }
+.stagger > *:nth-child(6) { animation-delay: 300ms; }
+.stagger > *:nth-child(7) { animation-delay: 360ms; }
+.stagger > *:nth-child(8) { animation-delay: 420ms; }
+
 /* ── Login Page ───────────────────────────────────────── */
 .login-container {
   min-height: 100vh;
@@ -97,12 +144,13 @@ code {
 .login-card {
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 3rem 3.5rem;
   text-align: center;
   box-shadow: var(--shadow);
   max-width: 420px;
   width: 100%;
+  animation: fadeUp 0.4s ease both;
 }
 
 .login-card h1 {

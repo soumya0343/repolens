@@ -9,19 +9,19 @@ export default {
     extend: {
       colors: {
         forest: {
-          bg:      '#0d1209',
-          surface: '#121710',
-          raised:  '#1a2115',
-          border:  '#242e1c',
+          bg:      '#0b0f0d',
+          surface: '#111714',
+          raised:  '#192219',
+          border:  '#263327',
         },
         ink: {
-          DEFAULT: '#e2ddd5',
-          muted:   '#7a7d6f',
-          heading: '#eeeae2',
+          DEFAULT: '#dce8e2',
+          muted:   '#7a9188',
+          heading: '#e8f5ef',
         },
       },
       fontFamily: {
-        fraunces:  ['Fraunces', 'Georgia', 'serif'],
+        syne:      ['Syne', 'system-ui', 'sans-serif'],
         'ibm-plex': ['IBM Plex Sans', 'system-ui', 'sans-serif'],
         'ibm-mono': ['IBM Plex Mono', 'Courier New', 'monospace'],
       },
