@@ -191,7 +191,23 @@ const Dashboard: React.FC = () => {
 
   const location = useLocation();
   const navigate = useNavigate();
-  const repoId = location.state?.repoId;
+  const incomingRepoId = location.state?.repoId as string | undefined;
+  const storedRepoId = typeof window !== 'undefined' ? localStorage.getItem('selectedRepoId') : null;
+  const [repoId, setRepoId] = useState<string | null>(incomingRepoId ?? storedRepoId);
+
+  useEffect(() => {
+    if (incomingRepoId && incomingRepoId !== repoId) {
+      setRepoId(incomingRepoId);
+    }
+  }, [incomingRepoId, repoId]);
+
+  useEffect(() => {
+    if (repoId) {
+      localStorage.setItem('selectedRepoId', repoId);
+    } else if (typeof window !== 'undefined') {
+      localStorage.removeItem('selectedRepoId');
+    }
+  }, [repoId]);
 
   // Live WS for PR score updates
   useEffect(() => {
