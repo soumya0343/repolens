@@ -96,7 +96,7 @@ async def github_callback(code: str, db: AsyncSession = Depends(get_db)):
         # Create internal JWT session token
         session_token = jwt.encode({
             "sub": str(user.id),
-            "exp": datetime.datetime.utcnow() + datetime.timedelta(days=30)
+            "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
         }, JWT_SECRET, algorithm="HS256")
         
         return {"status": "success", "token": session_token}

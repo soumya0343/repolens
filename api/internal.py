@@ -21,7 +21,7 @@ class ArchData(BaseModel):
     repo_id: str
     data: Dict[str, Any]
 
-@router.post('/arch_complete')
+@router.post('/arch_complete', dependencies=[Depends(_verify_internal)])
 async def arch_complete(data: ArchData = Body(...), db: AsyncSession = Depends(get_db)):
     # Upsert logic - delete old, add new
     stmt = select(ArchAnalysis).where(ArchAnalysis.repo_id == data.repo_id)

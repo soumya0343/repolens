@@ -133,11 +133,11 @@ Return JSON:
                 if text.startswith("json"):
                     text = text[4:]
             result = json.loads(text)
+            await self._cache_set(key, result)
         except Exception as e:
-            result = self._fallback_explain(repo_name, pr_details, risk_data)
-            result["_error"] = str(e)
+            # Do not cache errors — a transient failure should not poison the cache for 30 days
+            return {"error": "Unable to generate risk explanation.", "_error": str(e)}
 
-        await self._cache_set(key, result)
         return result
 
     async def generate_arch_policy(self, repo_stats: Dict, violations: List) -> str:
@@ -149,8 +149,10 @@ Return JSON:
             return cached.get("policy", "")
 
         model = _make_model(ARCH_POLICY_SYSTEM)
-        if model is None or not violations:
-            return self._fallback_arch_policy()
+        if model is None:
+            return None
+        if not violations:
+            return None
 
         user_prompt = f"""Violations detected:
 {json.dumps(violations[:20], indent=2)}
@@ -171,8 +173,9 @@ Generate a Rego policy JSON with this schema:
             result = json.loads(text)
             await self._cache_set(key, result)
             return result.get("policy", "")
-        except Exception:
-            return self._fallback_arch_policy()
+        except Exception as e:
+            # Do not cache errors
+            return None
 
     async def suggest_refactoring(self, file_content: str, issues: List) -> Dict:
         """Suggest code refactorings for architectural issues."""
@@ -183,8 +186,10 @@ Generate a Rego policy JSON with this schema:
             return cached
 
         model = _make_model(REFACTOR_SYSTEM)
-        if model is None or not issues:
-            return self._fallback_refactor()
+        if model is None:
+            return {"error": "Unable to generate refactoring suggestions: GEMINI_API_KEY not configured."}
+        if not issues:
+            return {"error": "Unable to generate refactoring suggestions: no issues provided."}
 
         user_prompt = f"""Issues in file:
 {json.dumps(issues[:10], indent=2)}
@@ -205,10 +210,11 @@ Return JSON:
                 if text.startswith("json"):
                     text = text[4:]
             result = json.loads(text)
-        except Exception:
-            result = self._fallback_refactor()
+            await self._cache_set(key, result)
+        except Exception as e:
+            # Do not cache errors
+            return {"error": "Unable to generate refactoring suggestions.", "_error": str(e)}
 
-        await self._cache_set(key, result)
         return result
 
     async def classify_commits(self, commits: List[Dict]) -> List[Dict]:
@@ -223,7 +229,7 @@ Return JSON:
 
         model = _make_model("Classify commit messages. Return only valid JSON array.")
         if model is None:
-            return [{"sha": c.get("sha"), "category": "chore"} for c in commits]
+            return [{"sha": c.get("sha"), "category": None} for c in commits]
 
         batch_prompt = f"""Classify each commit message into exactly one category:
 feature, bugfix, hotfix, refactor, chore, test, docs
@@ -247,51 +253,7 @@ Commits:
         except Exception:
             pass
 
-        return [{"sha": c.get("sha"), "category": "chore"} for c in commits]
-
-    # ── fallbacks ─────────────────────────────────────────────────────────────
-
-    def _fallback_explain(self, repo_name: str, pr_details: Dict, risk_data: Dict) -> Dict:
-        coupling = risk_data.get("coupling", 0)
-        arch = risk_data.get("architecture", 0)
-        level = "high" if (coupling > 0.6 or arch > 0.5) else "medium"
-        return {
-            "summary": f"PR in {repo_name} has {level} risk based on coupling and architecture signals.",
-            "root_causes": [
-                f"Coupling risk {coupling:.0%} — historically co-changed files may be missing.",
-                f"Architecture violation score {arch:.0%}.",
-            ],
-            "mitigation_steps": [
-                "Review coupled files listed in the Coupling tab before merging.",
-                "Check architectural violations in the Files tab.",
-            ],
-            "risk_level": level,
-            "actions": [],
-            "_source": "fallback",
-        }
-
-    def _fallback_arch_policy(self) -> str:
-        return (
-            'package repolens.policy\n\n'
-            'deny[msg] {\n'
-            '  input.layer == "presentation"\n'
-            '  input.imports_layer == "database"\n'
-            '  msg := "Presentation layer must not import Database layer directly"\n'
-            '}\n'
-        )
-
-    def _fallback_refactor(self) -> Dict:
-        return {
-            "suggestions": [
-                {
-                    "type": "Dependency Injection",
-                    "description": "Replace direct instantiation with injected dependencies.",
-                    "benefit": "Improves testability and decouples layers.",
-                }
-            ],
-            "priority": "medium",
-            "_source": "fallback",
-        }
+        return [{"sha": c.get("sha"), "category": None} for c in commits]
 
 
 async def get_llm_explainer() -> LLMExplainer:

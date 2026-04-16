@@ -238,12 +238,12 @@ class CoChangeOracle:
         if file1_changes == 0 or file2_changes == 0:
             return 0.0
 
-        # Jaccard-like temporal coherence
-        expected_joint = (file1_changes * file2_changes) / (file1_changes + file2_changes - joint_changes)
-        if expected_joint == 0:
-            return 1.0
+        # Jaccard similarity: intersection / union
+        union = file1_changes + file2_changes - joint_changes
+        if union == 0:
+            return 0.0
 
-        return min(joint_changes / expected_joint, 1.0)
+        return joint_changes / union
 
     def _format_for_frontend(self, coupling_scores: Dict[Tuple[str, str], float]) -> Dict:
         """Format coupling data for frontend D3.js visualization."""

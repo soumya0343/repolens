@@ -104,10 +104,10 @@ class ChronosGraph:
                 )
                 files = [f for f in cf_result.scalars().all()]
                 
-                # Fallback to message extraction if no files found in DB
+                # Skip commits with no file data — do not fabricate paths
                 if not files:
-                    files = self._extract_files_from_message(commit.message)
-                    
+                    continue
+
                 author_files[commit.author_login].update(files)
                 
                 # Create relationships in Neo4j for each commit
@@ -222,31 +222,6 @@ class ChronosGraph:
         return {
             "collaborations": record["collab_count"] if record else 0
         }
-
-    def _extract_files_from_message(self, message: str) -> List[str]:
-        """Extract file paths from commit message (simplified approach)"""
-        if not message:
-            return ["src/main.py"]
-        
-        files = []
-        msg_lower = message.lower()
-        
-        # Simple keyword-based file inference
-        if "api" in msg_lower:
-            files.append("src/api.ts")
-        if "model" in msg_lower or "schema" in msg_lower:
-            files.append("src/models.ts")
-        if "ui" in msg_lower or "component" in msg_lower:
-            files.append("src/components/ui.tsx")
-        if "test" in msg_lower:
-            files.append("tests/main.test.ts")
-        if "config" in msg_lower or "env" in msg_lower:
-            files.append(".env")
-        
-        if not files:
-            files = ["src/main.ts"]
-        
-        return files[:5]  # Limit to 5 files per commit
 
     async def get_stmc_score(self, repo_id: str, file1: str, file2: str) -> float:
         """
@@ -369,31 +344,27 @@ class ChronosGraph:
             )
             return [record["path"] for record in await result.data()]
 
-    async def get_repo_collaboration_score(self, repo_id: str) -> float:
+    async def get_repo_collaboration_score(self, repo_id: str) -> Optional[float]:
         """
         Compute a 0–1 collaboration health score for the repo.
         Score = fraction of developers who have at least one COLLABORATED or REVIEWED edge.
-        Falls back to 0.5 if Neo4j is unreachable.
+        Returns None if Neo4j is unreachable or the graph has not been built yet.
         """
-        try:
-            await self.connect()
-            async with self.driver.session() as session:
-                result = await session.run(
-                    """
-                    MATCH (d:Developer {repo_id: $repo_id})
-                    WITH count(d) AS total_devs
-                    MATCH (d1:Developer {repo_id: $repo_id})-[:COLLABORATED|REVIEWED]-()
-                    WITH total_devs, count(DISTINCT d1) AS connected_devs
-                    RETURN CASE WHEN total_devs > 1
-                                THEN toFloat(connected_devs) / total_devs
-                                ELSE 0.5 END AS score
-                    """,
-                    repo_id=repo_id,
-                )
-                record = await result.single()
-                return float(record["score"]) if record else 0.5
-        except Exception:
-            return 0.5
+        await self.connect()
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (d:Developer {repo_id: $repo_id})
+                WITH count(d) AS total_devs
+                WHERE total_devs > 1
+                MATCH (d1:Developer {repo_id: $repo_id})-[:COLLABORATED|REVIEWED]-()
+                WITH total_devs, count(DISTINCT d1) AS connected_devs
+                RETURN toFloat(connected_devs) / total_devs AS score
+                """,
+                repo_id=repo_id,
+            )
+            record = await result.single()
+            return float(record["score"]) if record else None
 
     async def get_developer_expertise(self, repo_id: str, developer_login: str) -> Dict:
         """Get expertise profile for a developer"""

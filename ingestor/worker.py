@@ -67,6 +67,7 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                     if node.get("author", {}).get("user"):
                         author_login = node["author"]["user"].get("login", "")
 
+                    parent_count = node.get("parents", {}).get("totalCount", 1)
                     commits_to_insert.append({
                         "id": str(uuid.uuid4()),
                         "repo_id": str(repo.id),
@@ -77,6 +78,7 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                         "committed_date": node["committedDate"],
                         "additions": node["additions"],
                         "deletions": node["deletions"],
+                        "is_merge_commit": parent_count > 1,
                     })
 
                 if commits_to_insert:
@@ -87,8 +89,12 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                     # Now fetch files for each new commit
                     print(f"Fetching files for {len(commits_to_insert)} commits...")
                     commit_files_to_insert = []
+                    file_fetch_failures = 0
 
                     for commit_data in commits_to_insert:
+                        # Skip merge commits flagged in GraphQL response
+                        if commit_data.get('is_merge_commit'):
+                            continue
                         try:
                             files = await fetch_commit_files(
                                 github_token, owner, name, commit_data['oid']
@@ -104,7 +110,11 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                                 })
                             await asyncio.sleep(0.1)  # throttle to avoid GitHub rate limits
                         except Exception as e:
-                            print(f"Error fetching files for commit {commit_data['oid']}: {e}")
+                            file_fetch_failures += 1
+                            print(f"[ERROR] Failed to fetch files for commit {commit_data['oid']}: {e}")
+
+                    if file_fetch_failures > 0:
+                        print(f"[WARN] {file_fetch_failures}/{len(commits_to_insert)} commits missing file data due to fetch errors")
 
                     if commit_files_to_insert:
                         print(f"Inserting {len(commit_files_to_insert)} commit files")

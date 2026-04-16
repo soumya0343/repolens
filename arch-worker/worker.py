@@ -7,6 +7,17 @@ import networkx as nx
 from tree_sitter import Parser
 import httpx
 
+INTERNAL_API_KEY = os.getenv("REPOLENS_API_KEY", "internal_key")
+
+# Tree-sitter queries to count real functions per language
+FUNC_QUERIES = {
+    '.py': '(function_definition) @fn',
+    '.js': '[(function_declaration) (method_definition) (arrow_function)] @fn',
+    '.ts': '[(function_declaration) (method_definition) (arrow_function)] @fn',
+    '.java': '(method_declaration) @fn',
+    '.go': '(function_declaration) @fn',
+}
+
 def get_lang(ext):
     from tree_sitter_language_pack import get_language
     lang_map = {
@@ -66,23 +77,31 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
                         with open(file_path, 'rb') as f:
                             code = f.read()
                         tree = parser.parse(code)
-                        
-                        # Simple metrics
-                        node_count = len(list(tree.root_node.children))
-                        func_count = len(tree.root_node.named_children)  # approx
-                        
+
+                        # Count real functions via Tree-sitter query (not top-level AST children)
+                        node_count = tree.root_node.descendant_count
+                        func_count = 0
+                        func_query_src = FUNC_QUERIES.get(ext)
+                        if func_query_src:
+                            try:
+                                q = lang.query(func_query_src)
+                                func_count = len(q.captures(tree.root_node))
+                            except Exception:
+                                func_count = 0
+
                         lang_stats[file_path.name] = {
                             'node_count': node_count,
                             'func_count': func_count,
                             'loc': len(code.decode().splitlines())
                         }
-                        
+
                         if func_count == 0 and node_count > 500:
                             violations.append({
                                 'file': str(file_path.relative_to(repo_dir)),
+                                'line': 1,
                                 'type': 'god_class',
                                 'severity': 'high',
-                                'msg': f'No functions but {node_count} nodes (potential config/data file violation)'
+                                'msg': f'No functions detected but {node_count} AST nodes — likely a large data/config file'
                             })
                         
                         # Extract imports for cycle detection (python example)
@@ -99,7 +118,7 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
         # OPA-like policy evaluation (simple rules)
         total_files = len([f for ext in LANGUAGES for f in lang_stats if f.endswith(ext)])
         if total_files > 1000:
-            violations.append({'type': 'monolith_size', 'severity': 'medium', 'msg': f'{total_files} files - potential monolith'})
+            violations.append({'type': 'monolith_size', 'line': 0, 'severity': 'medium', 'msg': f'{total_files} files — potential monolith'})
         
         print(f"Found {len(violations)} violations, {len(cycle_violations)} cycles")
         
@@ -111,10 +130,11 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
         }
         
         async with httpx.AsyncClient() as client:
-            resp = await client.post("http://api:8000/internal/arch_complete", json={
-                'repo_id': repo_id,
-                'data': analysis_data
-            })
+            resp = await client.post(
+                "http://api:8000/internal/arch_complete",
+                json={'repo_id': repo_id, 'data': analysis_data},
+                headers={"X-Internal-Key": INTERNAL_API_KEY},
+            )
             print(f"API response: {resp.status_code}")
         
     except Exception as e:

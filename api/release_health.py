@@ -10,7 +10,7 @@ This module calculates:
 
 import asyncio
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, and_
@@ -25,7 +25,7 @@ class ReleaseHealthTracker:
         """
         Calculate DORA metrics for a repository over a given period.
         """
-        since = datetime.now() - timedelta(days=days)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
         
         # 1. Deployment Frequency
         # Using merged PRs as a proxy for deployments
@@ -85,7 +85,6 @@ class ReleaseHealthTracker:
             and_(
                 CIRun.repo_id == repo_id,
                 CIRun.conclusion == "success",
-                CIRun.created_at >= since,
             )
         ).order_by(CIRun.created_at)
 

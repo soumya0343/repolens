@@ -126,6 +126,7 @@ async def tool_get_coupling_rules(repo_id: str, file_path: str, db: AsyncSession
 
 
 async def tool_get_file_risk(repo_id: str, file_path: str, db: AsyncSession) -> Dict:
+    # Fetch target file stats
     result = await db.execute(
         select(
             CommitFile.file_path,
@@ -141,12 +142,29 @@ async def tool_get_file_risk(repo_id: str, file_path: str, db: AsyncSession) -> 
     if not row:
         return {"error": f"File '{file_path}' not found in commit history"}
     change_count = row[1]
+
+    # Compute percentile rank against all files in the repo for a meaningful risk score
+    all_counts_result = await db.execute(
+        select(func.count(CommitFile.id).label("change_count"))
+        .join(Commit, Commit.id == CommitFile.commit_id)
+        .where(Commit.repo_id == repo_id)
+        .group_by(CommitFile.file_path)
+    )
+    all_counts = sorted(r[0] for r in all_counts_result.all())
+    if all_counts:
+        below = sum(1 for c in all_counts if c < change_count)
+        percentile = below / len(all_counts)
+        risk_score = round(percentile * 100, 1)
+    else:
+        risk_score = 0.0
+
     return {
         "file_path": file_path,
         "change_count": change_count,
         "additions": row[2] or 0,
         "deletions": row[3] or 0,
-        "risk_score": min(20 + change_count * 5, 95),
+        "risk_score": risk_score,
+        "risk_score_note": "Percentile rank by change frequency within this repo (0=least changed, 100=most changed)",
     }
 
 
@@ -336,8 +354,22 @@ async def chat(
             if choice.finish_reason != "tool_calls":
                 break
 
-            # Append assistant message with tool_calls
-            messages.append(choice.message)
+            # Append assistant message as a plain dict — Groq Message objects
+            # are not JSON-serializable and break on consecutive tool-call rounds
+            assistant_msg: Dict = {"role": "assistant", "content": choice.message.content}
+            if choice.message.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in choice.message.tool_calls
+                ]
+            messages.append(assistant_msg)
 
             # Execute each tool call
             for tc in choice.message.tool_calls:
