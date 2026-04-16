@@ -32,6 +32,7 @@ async def bulk_insert_commits(db: AsyncSession, commits: list[dict]):
             str(commit['committed_date']),
             str(commit.get('additions', 0)),
             str(commit.get('deletions', 0)),
+            'true' if commit.get('is_merge_commit') else 'false',
         ]) + "\n"
 
         buffer.write(row)
@@ -46,7 +47,7 @@ async def bulk_insert_commits(db: AsyncSession, commits: list[dict]):
     result = await raw_conn.driver_connection.copy_to_table(
         'commits',
         source=buffer_bytes,
-        columns=['id', 'repo_id', 'oid', 'message', 'author_email', 'author_login', 'committed_date', 'additions', 'deletions'],
+        columns=['id', 'repo_id', 'oid', 'message', 'author_email', 'author_login', 'committed_date', 'additions', 'deletions', 'is_merge_commit'],
         format='csv',
         delimiter='\t',
         null=''

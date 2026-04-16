@@ -2,14 +2,17 @@
 CoChangeOracle - Analyzes commit history to identify files that frequently change together.
 
 This module implements:
-- FP-Growth algorithm for frequent pattern mining
+- FP-Growth algorithm for frequent pattern mining (true tree-based, not Apriori)
 - DERAR (Decay Exponential Recent Activity Relevance) filter for temporal weighting
+  Applied as a post-hoc multiplier on raw support counts — not by duplicating transactions.
 - TCM (Temporal Coupling Metric) scoring
-- Incremental updates for new commits
+- 3-file itemset mining (triple coupling rules)
 """
 
 import asyncio
-from typing import List, Dict, Set, Tuple
+import json
+import os
+from typing import List, Dict, Set, Tuple, Optional
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta
 import math
@@ -18,7 +21,119 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import and_, func
 
+import redis.asyncio as aioredis
+
 from models import Commit, CommitFile, Repo
+
+_CACHE_TTL = 3600  # 1 hour
+
+
+def _redis_client() -> aioredis.Redis:
+    host = os.getenv("REDIS_HOST", "localhost")
+    port = int(os.getenv("REDIS_PORT", 6379))
+    return aioredis.from_url(f"redis://{host}:{port}", decode_responses=True)
+
+
+# ── FP-Growth data structures ─────────────────────────────────────────────────
+
+class _FPNode:
+    """Node in an FP-tree. count is a float to support weighted transactions."""
+    __slots__ = ('item', 'count', 'parent', 'children', 'link')
+
+    def __init__(self, item: Optional[str], count: float, parent):
+        self.item = item
+        self.count = count
+        self.parent = parent
+        self.children: Dict[str, '_FPNode'] = {}
+        self.link: Optional['_FPNode'] = None  # horizontal header-table link
+
+
+class _FPTree:
+    """Weighted FP-tree with header table for efficient pattern extraction."""
+
+    def __init__(self):
+        self.root = _FPNode(None, 0.0, None)
+        # header_table: item -> [total_support_float, first_node]
+        self.header_table: Dict[str, list] = {}
+
+    def insert(self, items: List[str], weight: float) -> None:
+        node = self.root
+        for item in items:
+            if item in node.children:
+                node.children[item].count += weight
+            else:
+                new_node = _FPNode(item, weight, node)
+                node.children[item] = new_node
+                if item not in self.header_table:
+                    self.header_table[item] = [weight, new_node]
+                else:
+                    self.header_table[item][0] += weight
+                    # Append to end of horizontal linked list
+                    cur = self.header_table[item][1]
+                    while cur.link:
+                        cur = cur.link
+                    cur.link = new_node
+            node = node.children[item]
+
+    def _conditional_pattern_base(self, item: str) -> List[Tuple[List[str], float]]:
+        """Return (prefix_path, weight) pairs for conditional FP-tree construction."""
+        patterns = []
+        node = self.header_table[item][1]
+        while node:
+            path: List[str] = []
+            parent = node.parent
+            while parent and parent.item is not None:
+                path.append(parent.item)
+                parent = parent.parent
+            if path:
+                patterns.append((path, node.count))
+            node = node.link
+        return patterns
+
+
+def _mine_tree(
+    tree: _FPTree,
+    min_sup: float,
+    prefix: frozenset,
+    max_size: int,
+    results: List[Tuple[frozenset, float]],
+) -> None:
+    """Recursively mine frequent itemsets from an FP-tree (depth-first)."""
+    for item, (support, _) in tree.header_table.items():
+        if support < min_sup:
+            continue
+        new_prefix = prefix | frozenset([item])
+        results.append((new_prefix, support))
+
+        if len(new_prefix) >= max_size:
+            continue
+
+        # Build conditional FP-tree
+        cond_base = tree._conditional_pattern_base(item)
+        if not cond_base:
+            continue
+
+        # Count item support in conditional base
+        cond_item_sup: Dict[str, float] = defaultdict(float)
+        for path, weight in cond_base:
+            for p_item in path:
+                cond_item_sup[p_item] += weight
+
+        freq_in_cond = {i: s for i, s in cond_item_sup.items() if s >= min_sup}
+        if not freq_in_cond:
+            continue
+
+        cond_tree = _FPTree()
+        for path, weight in cond_base:
+            filtered = sorted(
+                [i for i in path if i in freq_in_cond],
+                key=lambda x: freq_in_cond[x],
+                reverse=True,
+            )
+            if filtered:
+                cond_tree.insert(filtered, weight)
+
+        _mine_tree(cond_tree, min_sup, new_prefix, max_size, results)
 
 
 class CoChangeOracle:
@@ -43,7 +158,27 @@ class CoChangeOracle:
         Main analysis function for a repository.
 
         Returns coupling data in format suitable for frontend visualization.
+        Result cached in Redis for 1 hour keyed by (repo_id, latest_commit_oid).
         """
+        # Use latest commit OID as cache discriminator so new data invalidates the entry
+        latest_oid_row = await self.db.execute(
+            select(Commit.oid)
+            .where(Commit.repo_id == repo_id)
+            .order_by(Commit.committed_date.desc())
+            .limit(1)
+        )
+        latest_oid = latest_oid_row.scalar() or "none"
+        cache_key = f"cochange:{repo_id}:{latest_oid}"
+
+        try:
+            r = _redis_client()
+            cached = await r.get(cache_key)
+            await r.aclose()
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
+
         # Get all commits for the repository
         commits = await self._get_commits(repo_id)
         if not commits:
@@ -62,12 +197,24 @@ class CoChangeOracle:
         coupling_scores = self._calculate_tcm_scores(frequent_patterns, time_windows)
 
         # Convert to frontend format
-        return self._format_for_frontend(coupling_scores)
+        result = self._format_for_frontend(coupling_scores)
+
+        try:
+            r = _redis_client()
+            await r.setex(cache_key, _CACHE_TTL, json.dumps(result))
+            await r.aclose()
+        except Exception:
+            pass
+
+        return result
 
     async def _get_commits(self, repo_id: str) -> List[Dict]:
         """Fetch all commits for a repository with their actual changed files."""
         commits_result = await self.db.execute(
-            select(Commit).where(Commit.repo_id == repo_id)
+            select(Commit).where(
+                Commit.repo_id == repo_id,
+                Commit.files_fetch_failed == False,  # noqa: E712
+            )
         )
         commits = commits_result.scalars().all()
         if not commits:
@@ -134,135 +281,157 @@ class CoChangeOracle:
             for commit in commits:
                 commit["weight"] = decay_factor
 
-    def _extract_file_patterns(self, time_windows: Dict[str, List[Dict]]) -> List[Set[str]]:
-        """Extract file change patterns from time windows."""
-        patterns = []
+    def _extract_file_patterns(self, time_windows: Dict[str, List[Dict]]) -> List[Tuple[Set[str], float]]:
+        """Return (fileset, weight) pairs — one per multi-file commit.
 
+        Weight is the DERAR decay factor for that commit's time window.
+        No duplication: the FP-tree handles weighted support natively.
+        """
+        patterns: List[Tuple[Set[str], float]] = []
         for window_commits in time_windows.values():
             for commit in window_commits:
                 files = set(commit["files_changed"])
-                if len(files) > 1:  # Only include commits that change multiple files
-                    weight = commit.get("weight", 1.0)
-                    # Add pattern multiple times based on weight (simplified)
-                    times = max(1, int(weight * 10))
-                    for _ in range(times):
-                        patterns.append(files)
-
+                if len(files) > 1:
+                    patterns.append((files, commit.get("weight", 1.0)))
         return patterns
 
-    def _fp_growth(self, transactions: List[Set[str]]) -> List[Tuple[Set[str], float]]:
+    def _fp_growth(self, transactions: List[Tuple[Set[str], float]]) -> List[Tuple[frozenset, float]]:
         """
-        Simplified FP-Growth implementation for frequent pattern mining.
+        True FP-Growth: build weighted FP-tree, then mine frequent itemsets
+        up to self.max_itemset_size (default 3) in a single tree traversal.
 
-        Returns list of (itemset, support) tuples.
+        Returns list of (frozenset, raw_weighted_support) tuples.
+        Support values are raw weighted counts (not fractions) — normalised
+        against total_weight in _calculate_tcm_scores.
         """
         if not transactions:
             return []
 
-        # Count individual item frequencies
-        item_counts = Counter()
-        for transaction in transactions:
-            for item in transaction:
-                item_counts[item] += 1
+        # Step 1: compute weighted support for each item
+        item_sup: Dict[str, float] = defaultdict(float)
+        total_weight = sum(w for _, w in transactions)
+        for items, weight in transactions:
+            for item in items:
+                item_sup[item] += weight
 
-        total_transactions = len(transactions)
-
-        # Filter items by minimum support
-        frequent_items = {
-            item: count / total_transactions
-            for item, count in item_counts.items()
-            if count / total_transactions >= self.min_support
-        }
-
-        if not frequent_items:
+        min_sup_count = self.min_support * total_weight
+        freq_items = {item: sup for item, sup in item_sup.items() if sup >= min_sup_count}
+        if not freq_items:
             return []
 
-        # Simple pairwise analysis (simplified FP-Growth)
-        patterns = []
+        # Step 2: build FP-tree (items sorted by descending support for sharing)
+        tree = _FPTree()
+        for items, weight in transactions:
+            sorted_items = sorted(
+                [i for i in items if i in freq_items],
+                key=lambda x: freq_items[x],
+                reverse=True,
+            )
+            if sorted_items:
+                tree.insert(sorted_items, weight)
 
-        items = list(frequent_items.keys())
-        for i in range(len(items)):
-            for j in range(i + 1, len(items)):
-                item1, item2 = items[i], items[j]
+        # Step 3: mine all frequent itemsets up to max_itemset_size
+        results: List[Tuple[frozenset, float]] = []
+        _mine_tree(tree, min_sup_count, frozenset(), self.max_itemset_size, results)
+        return results
 
-                # Count co-occurrences
-                co_count = 0
-                for transaction in transactions:
-                    if item1 in transaction and item2 in transaction:
-                        co_count += 1
+    def _calculate_tcm_scores(
+        self,
+        frequent_patterns: List[Tuple[frozenset, float]],
+        time_windows: Dict[str, List[Dict]],
+    ) -> Dict[Tuple[str, ...], float]:
+        """Calculate TCM = (weighted_support / total_weight) * temporal_coherence.
 
-                support = co_count / total_transactions
-                if support >= self.min_support:
-                    patterns.append(({item1, item2}, support))
+        Handles both 2-file pairs and 3-file triplets.
+        3-file TCM uses average pairwise temporal coherence.
+        """
+        total_weight = sum(
+            commit.get("weight", 1.0)
+            for commits in time_windows.values()
+            for commit in commits
+        )
+        if total_weight == 0:
+            return {}
 
-        return patterns
+        coupling_scores: Dict[Tuple[str, ...], float] = {}
 
-    def _calculate_tcm_scores(self, frequent_patterns: List[Tuple[Set[str], float]],
-                            time_windows: Dict[str, List[Dict]]) -> Dict[Tuple[str, str], float]:
-        """Calculate Temporal Coupling Metric (TCM) scores."""
-        coupling_scores = {}
+        for pattern, raw_support in frequent_patterns:
+            size = len(pattern)
+            if size < 2 or size > 3:
+                continue
 
-        for pattern, support in frequent_patterns:
-            if len(pattern) == 2:  # Only handle pairs for now
-                files = list(pattern)
-                file1, file2 = files[0], files[1]
+            files = tuple(sorted(pattern))
+            support_frac = raw_support / total_weight
 
-                # Calculate temporal coupling score
-                # TCM = support * temporal_coherence
-                temporal_coherence = self._calculate_temporal_coherence(file1, file2, time_windows)
+            if size == 2:
+                coherence = self._calculate_temporal_coherence(files[0], files[1], time_windows)
+            else:  # size == 3
+                # Average Jaccard coherence across the 3 pairs
+                coherence = (
+                    self._calculate_temporal_coherence(files[0], files[1], time_windows)
+                    + self._calculate_temporal_coherence(files[0], files[2], time_windows)
+                    + self._calculate_temporal_coherence(files[1], files[2], time_windows)
+                ) / 3.0
 
-                tcm_score = support * temporal_coherence
-                coupling_scores[(file1, file2)] = tcm_score
+            tcm = support_frac * coherence
+            if tcm > 0:
+                coupling_scores[files] = tcm
 
         return coupling_scores
 
     def _calculate_temporal_coherence(self, file1: str, file2: str,
-                                    time_windows: Dict[str, List[Dict]]) -> float:
-        """Calculate how often two files change together relative to individually."""
-        file1_changes = 0
-        file2_changes = 0
-        joint_changes = 0
-
+                                      time_windows: Dict[str, List[Dict]]) -> float:
+        """Jaccard similarity: weighted joint / weighted union."""
+        file1_w = file2_w = joint_w = 0.0
         for commits in time_windows.values():
             for commit in commits:
                 files = set(commit["files_changed"])
-                weight = commit.get("weight", 1.0)
+                w = commit.get("weight", 1.0)
+                f1 = file1 in files
+                f2 = file2 in files
+                if f1:
+                    file1_w += w
+                if f2:
+                    file2_w += w
+                if f1 and f2:
+                    joint_w += w
 
-                if file1 in files:
-                    file1_changes += weight
-                if file2 in files:
-                    file2_changes += weight
-                if file1 in files and file2 in files:
-                    joint_changes += weight
+        union = file1_w + file2_w - joint_w
+        return joint_w / union if union > 0 else 0.0
 
-        if file1_changes == 0 or file2_changes == 0:
-            return 0.0
+    def _format_for_frontend(self, coupling_scores: Dict[Tuple[str, ...], float]) -> Dict:
+        """Format coupling data for D3.js visualization.
 
-        # Jaccard similarity: intersection / union
-        union = file1_changes + file2_changes - joint_changes
-        if union == 0:
-            return 0.0
+        Pairs → single link.
+        Triplets → 3 links sharing a triplet_id so the frontend can highlight the group.
+        """
+        file_set: Set[str] = set()
+        for key in coupling_scores:
+            file_set.update(key)
 
-        return joint_changes / union
+        nodes = [{"id": f, "group": 1} for f in sorted(file_set)]
 
-    def _format_for_frontend(self, coupling_scores: Dict[Tuple[str, str], float]) -> Dict:
-        """Format coupling data for frontend D3.js visualization."""
-        # Create nodes (files)
-        file_set = set()
-        for file1, file2 in coupling_scores.keys():
-            file_set.add(file1)
-            file_set.add(file2)
-
-        nodes = [{"id": file, "group": 1} for file in sorted(file_set)]
-
-        # Create links (couplings)
         links = []
-        for (file1, file2), score in coupling_scores.items():
-            links.append({
-                "source": file1,
-                "target": file2,
-                "value": min(score * 10, 1.0)  # Normalize for visualization
-            })
+        for key, score in coupling_scores.items():
+            value = min(score * 10, 1.0)
+            if len(key) == 2:
+                links.append({
+                    "source": key[0],
+                    "target": key[1],
+                    "value": value,
+                    "triplet": False,
+                })
+            else:  # 3-file triplet
+                triplet_id = "|".join(key)
+                for i in range(3):
+                    for j in range(i + 1, 3):
+                        links.append({
+                            "source": key[i],
+                            "target": key[j],
+                            "value": value,
+                            "triplet": True,
+                            "triplet_id": triplet_id,
+                        })
 
         return {"nodes": nodes, "links": links}
 

@@ -23,7 +23,7 @@ from sqlalchemy import func
 import jwt
 
 from database import get_db
-from models import User, Repo, UserRepo, Commit, PullRequest, CIRun, CommitFile, ArchAnalysis
+from models import User, Repo, UserRepo, Commit, PullRequest, CIRun, CommitFile, ArchAnalysis, PRFile
 
 router = APIRouter(prefix="/repos", tags=["chat"])
 JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key")
@@ -173,8 +173,8 @@ async def tool_get_bus_factor(repo_id: str, db: AsyncSession) -> Dict:
     analyzer = await get_churn_analyzer(db)
     data = await analyzer.analyze_repository(repo_id)
     return {
-        "overall_bus_factor_hhi": data.get("overall_bus_factor", 0),
-        "risk_level": data.get("risk_level", "unknown"),
+        "overall_bus_factor_hhi": data.get("overall_bus_factor"),
+        "risk_level": data.get("risk_level"),
         "top_contributors": data.get("contributors", [])[:5],
         "recommendations": data.get("recommendations", []),
     }
@@ -184,6 +184,33 @@ async def tool_get_risk_score(repo_id: str, db: AsyncSession) -> Dict:
     from risk_scorer import get_unified_risk_scorer
     scorer = await get_unified_risk_scorer(db)
     return await scorer.calculate_repo_risk(repo_id)
+
+
+async def tool_get_dora_metrics(repo_id: str, days: int, db: AsyncSession) -> Dict:
+    from release_health import get_release_health_tracker
+    tracker = await get_release_health_tracker(db)
+    return await tracker.get_dora_metrics(repo_id, days=days)
+
+
+async def tool_get_arch_violations(repo_id: str, db: AsyncSession) -> Dict:
+    arch_result = await db.execute(
+        select(ArchAnalysis)
+        .where(ArchAnalysis.repo_id == repo_id)
+        .order_by(ArchAnalysis.parsed_at.desc())
+        .limit(1)
+    )
+    arch = arch_result.scalar_one_or_none()
+    if not arch:
+        return {"violations": [], "import_cycles": []}
+    violations = [
+        {k: v for k, v in v.items() if k != "file_content"}  # strip large field
+        for v in (arch.violations or [])
+    ]
+    return {
+        "violations": violations,
+        "import_cycles": arch.import_cycles or [],
+        "violation_count": len(violations),
+    }
 
 
 # ── Tool dispatch ────────────────────────────────────────────────────────────
@@ -268,6 +295,32 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_dora_metrics",
+            "description": "Get DORA metrics: deployment frequency, lead time, change failure rate, MTTR.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "Lookback window in days (default 30)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_arch_violations",
+            "description": "Get architectural violations and import cycles detected by ArchSentinel.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 CHAT_SYSTEM = """You are a senior software engineer assistant embedded in RepoLens, a repository intelligence platform.
@@ -289,6 +342,10 @@ async def _run_tool(name: str, inputs: Dict, repo_id: str, db: AsyncSession) -> 
         return await tool_get_bus_factor(repo_id, db)
     elif name == "get_risk_score":
         return await tool_get_risk_score(repo_id, db)
+    elif name == "get_dora_metrics":
+        return await tool_get_dora_metrics(repo_id, inputs.get("days", 30), db)
+    elif name == "get_arch_violations":
+        return await tool_get_arch_violations(repo_id, db)
     return {"error": f"Unknown tool: {name}"}
 
 

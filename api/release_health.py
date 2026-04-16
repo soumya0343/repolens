@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, and_
 
-from models import PullRequest, Commit, CIRun, Repo
+from models import PullRequest, Commit, CIRun, Repo, PRFile, CommitFile
 
 class ReleaseHealthTracker:
     def __init__(self, db: AsyncSession):
@@ -45,20 +45,60 @@ class ReleaseHealthTracker:
         df = merged_count / days
         
         # 2. Lead Time for Changes
-        # Time from PR creation to merge (proxy for lead time)
-        lt_stmt = select(PullRequest.created_at, PullRequest.merged_at).where(
-            and_(
-                PullRequest.repo_id == repo_id,
-                PullRequest.merged_at >= since
+        # Ideal DORA definition: first commit on branch → merge.
+        # We approximate using PRFile→CommitFile join to find the oldest commit
+        # by the PR author that touched any file in the PR, within 90 days of merge.
+        # Falls back to PR.created_at → merged_at when PRFile data is absent (legacy repos).
+        lt_lookback = timedelta(days=90)
+        lt_stmt = (
+            select(
+                PullRequest.merged_at,
+                func.min(Commit.committed_date).label("first_commit_date"),
             )
+            .join(PRFile, PRFile.pr_id == PullRequest.id)
+            .join(CommitFile, CommitFile.file_path == PRFile.path)
+            .join(Commit, and_(
+                Commit.id == CommitFile.commit_id,
+                Commit.author_login == PullRequest.author_login,
+                Commit.repo_id == PullRequest.repo_id,
+                Commit.committed_date <= PullRequest.merged_at,
+                Commit.committed_date >= PullRequest.merged_at - lt_lookback,
+            ))
+            .where(
+                and_(
+                    PullRequest.repo_id == repo_id,
+                    PullRequest.merged_at >= since,
+                    PullRequest.author_login.isnot(None),
+                )
+            )
+            .group_by(PullRequest.id, PullRequest.merged_at)
         )
         lt_result = await self.db.execute(lt_stmt)
-        durations = []
-        for created, merged in lt_result.all():
-            if created and merged:
-                durations.append((merged - created).total_seconds())
-        
-        avg_lead_time = (sum(durations) / len(durations) / 3600) if durations else 0 # in hours
+        lt_rows = lt_result.all()
+
+        if lt_rows:
+            # PRFile data available — use first-commit-on-branch lead time
+            durations = [
+                (merged - first_commit).total_seconds()
+                for merged, first_commit in lt_rows
+                if merged and first_commit and merged > first_commit
+            ]
+        else:
+            # Fallback: PR creation → merge (old proxy, less accurate)
+            fb_stmt = select(PullRequest.created_at, PullRequest.merged_at).where(
+                and_(
+                    PullRequest.repo_id == repo_id,
+                    PullRequest.merged_at >= since,
+                )
+            )
+            fb_result = await self.db.execute(fb_stmt)
+            durations = [
+                (merged - created).total_seconds()
+                for created, merged in fb_result.all()
+                if created and merged
+            ]
+
+        avg_lead_time = (sum(durations) / len(durations) / 3600) if durations else 0  # in hours
         
         # 3. Change Failure Rate
         # Only post-merge pushes to the default branch — not scheduled runs, PRs, or manual triggers.
@@ -126,7 +166,7 @@ class ReleaseHealthTracker:
             "lead_time_for_changes": {
                 "value": round(avg_lead_time, 1),
                 "rating": self._rate_lt(avg_lead_time),
-                "label": "Hours from PR to Merge"
+                "label": "Hours from first branch commit to merge (falls back to PR creation when PRFile data absent)"
             },
             "change_failure_rate": {
                 "value": round(cfr * 100, 1) if cfr is not None else None,

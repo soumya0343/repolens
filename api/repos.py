@@ -811,3 +811,43 @@ async def generate_arch_policy_endpoint(
     explainer = await get_llm_explainer()
     policy = await explainer.generate_arch_policy(repo_stats={}, violations=violations)
     return {"policy": policy}
+
+
+@router.get("/{repo_id}/arch/suggest")
+async def suggest_refactoring(
+    repo_id: str,
+    file: str = "",
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Suggest concrete refactoring steps for architectural violations in a file."""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    if not result.scalars().first():
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    arch_result = await db.execute(
+        select(ArchAnalysis)
+        .where(ArchAnalysis.repo_id == repo_id)
+        .order_by(ArchAnalysis.parsed_at.desc())
+        .limit(1)
+    )
+    arch = arch_result.scalars().first()
+    all_violations = (arch.violations or []) if arch else []
+
+    if file:
+        violations = [v for v in all_violations if v.get("file", "") == file]
+    else:
+        violations = all_violations
+
+    if not violations:
+        return {"suggestions": {}, "detail": "No violations found for the specified file."}
+
+    # Pass file_content from the first matched violation (stored by arch-worker)
+    file_content = violations[0].get("file_content", "") if violations else ""
+    issues = [{k: v for k, v in v.items() if k != "file_content"} for v in violations]
+
+    explainer = await get_llm_explainer()
+    suggestions = await explainer.suggest_refactoring(issues=issues, file_content=file_content)
+    return {"suggestions": suggestions, "violation_count": len(violations)}

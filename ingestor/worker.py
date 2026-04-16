@@ -13,6 +13,7 @@ from models import Repo
 from sqlalchemy.future import select
 from db_writer import bulk_insert_commits, bulk_insert_commit_files, bulk_insert_prs, bulk_insert_pr_files
 from models import Commit
+from sqlalchemy import update
 
 async def run_backfill_job(ctx, repo_id: str, github_token: str):
     """
@@ -100,7 +101,7 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                     # Now fetch files for each new commit
                     print(f"Fetching files for {len(commits_to_insert)} commits...")
                     commit_files_to_insert = []
-                    file_fetch_failures = 0
+                    failed_commit_ids = []
 
                     for commit_data in commits_to_insert:
                         # Skip merge commits flagged in GraphQL response
@@ -121,11 +122,17 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                                 })
                             await asyncio.sleep(0.1)  # throttle to avoid GitHub rate limits
                         except Exception as e:
-                            file_fetch_failures += 1
+                            failed_commit_ids.append(commit_data['id'])
                             print(f"[ERROR] Failed to fetch files for commit {commit_data['oid']}: {e}")
 
-                    if file_fetch_failures > 0:
-                        print(f"[WARN] {file_fetch_failures}/{len(commits_to_insert)} commits missing file data due to fetch errors")
+                    if failed_commit_ids:
+                        print(f"[WARN] {len(failed_commit_ids)}/{len(commits_to_insert)} commits missing file data — marking files_fetch_failed")
+                        await db.execute(
+                            update(Commit)
+                            .where(Commit.id.in_(failed_commit_ids))
+                            .values(files_fetch_failed=True)
+                        )
+                        await db.commit()
 
                     if commit_files_to_insert:
                         print(f"Inserting {len(commit_files_to_insert)} commit files")
@@ -228,6 +235,17 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
         # mark repo as synced so dashboard reflects completion
         repo.synced_at = datetime.now(timezone.utc)
         await db.commit()
+
+        # Auto-trigger ChronosGraph build now that commit+PR data is populated
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    f"http://api:8000/internal/build_graph/{repo_id}",
+                    headers={"X-Internal-Key": os.getenv("REPOLENS_API_KEY", "internal_key")},
+                )
+                print(f"ChronosGraph build triggered: {resp.status_code} {resp.text[:200]}")
+        except Exception as e:
+            print(f"[WARN] ChronosGraph build trigger failed (non-fatal): {e}")
 
     print(f"Backfill complete for {owner}/{name}. Processed {total_commits} commits.")
     return total_commits

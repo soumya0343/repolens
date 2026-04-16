@@ -85,11 +85,11 @@ async def get_bot_analysis(repo_id: str, db: AsyncSession = Depends(get_db)):
             repo_name=f"{repo.owner}/{repo.name}",
             pr_details={"title": latest_pr.title or "", "files": []},
             risk_data={
-                "coupling": risk["breakdown"]["coupling"] / 100,
-                "architecture": risk["breakdown"]["architecture"] / 100,
-                "bus_factor": risk["breakdown"]["bus_factor"] / 100,
-                "ci": risk["breakdown"]["ci"] / 100,
-                "collaboration": risk["breakdown"]["collaboration"] / 100,
+                "coupling": (risk["breakdown"]["coupling"] / 100) if risk["breakdown"].get("coupling") is not None else None,
+                "architecture": (risk["breakdown"]["architecture"] / 100) if risk["breakdown"].get("architecture") is not None else None,
+                "bus_factor": (risk["breakdown"]["bus_factor"] / 100) if risk["breakdown"].get("bus_factor") is not None else None,
+                "ci": (risk["breakdown"]["ci"] / 100) if risk["breakdown"].get("ci") is not None else None,
+                "collaboration": (risk["breakdown"]["collaboration"] / 100) if risk["breakdown"].get("collaboration") is not None else None,
             },
         )
 
@@ -111,3 +111,16 @@ async def get_bot_analysis(repo_id: str, db: AsyncSession = Depends(get_db)):
     }
 
     return {"risk": risk, "explanation": explanation, "violations": violations, "config": bot_config}
+
+
+@router.post('/build_graph/{repo_id}', dependencies=[Depends(_verify_internal)])
+async def trigger_build_graph(repo_id: str, db: AsyncSession = Depends(get_db)):
+    """Trigger ChronosGraph build for a repo — called by ingestor worker post-backfill."""
+    from chronos_graph import get_chronos_graph
+    graph = await get_chronos_graph(db)
+    try:
+        stats = await graph.build_graph(repo_id)
+        return {"status": "built", "stats": stats}
+    except Exception as e:
+        # Graph build failure must not block the backfill response
+        return {"status": "error", "detail": str(e)}

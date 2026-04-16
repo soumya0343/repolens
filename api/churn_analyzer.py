@@ -108,6 +108,7 @@ class ChurnBusFactorAnalyzer:
             .where(
                 Commit.repo_id == repo_id,
                 Commit.author_login.isnot(None),
+                Commit.files_fetch_failed == False,  # noqa: E712
                 not_(exclusions),
             )
             .group_by(Commit.id, Commit.author_login, Commit.committed_date)
@@ -192,6 +193,7 @@ class ChurnBusFactorAnalyzer:
             .where(
                 Commit.repo_id == repo_id,
                 Commit.author_login.isnot(None),
+                Commit.files_fetch_failed == False,  # noqa: E712
                 not_(exclusions),
             )
             .group_by(CommitFile.file_path, Commit.author_login)
@@ -235,7 +237,9 @@ class ChurnBusFactorAnalyzer:
         overall_hhi = bus_factor_metrics["overall_hhi"]
 
         # Determine overall risk level
-        if overall_hhi > 0.8:
+        if overall_hhi is None:
+            overall_risk = None
+        elif overall_hhi > 0.8:
             overall_risk = "critical"
         elif overall_hhi > 0.6:
             overall_risk = "high"
@@ -263,7 +267,7 @@ class ChurnBusFactorAnalyzer:
             recommendations.append("Increase contributor diversity to reduce bus factor risk.")
 
         # Contributor diversity recommendations
-        if overall_hhi > 0.5:
+        if overall_hhi is not None and overall_hhi > 0.5:
             recommendations.append("Implement code review rotation to distribute knowledge.")
             recommendations.append("Create documentation for critical components.")
 

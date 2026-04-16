@@ -3,9 +3,17 @@ TestPulse - Per-run CI log clustering (ci-worker copy).
 
 Only handles per-run log analysis. Cross-run flakiness detection lives
 in api/test_pulse.py and requires a DB session.
+
+Structured parsing:
+- JUnit XML (pytest, Maven, Gradle, etc.) — detected by '<' prefix
+- Jest JSON (--json flag) — detected by '{' prefix + 'testResults' key
+When a structured format is detected, failed test names are extracted and
+returned as `failed_tests` alongside the error clusters.
 """
 
 import re
+import json
+import xml.etree.ElementTree as ET
 from typing import List, Dict
 
 
@@ -51,6 +59,51 @@ class DrainClusterer:
         return matches / len(tokens1)
 
 
+def _parse_junit_xml(content: str) -> List[Dict]:
+    """Extract failed/errored test cases from JUnit XML."""
+    results = []
+    try:
+        root = ET.fromstring(content)
+        suites = list(root) if root.tag == 'testsuites' else ([root] if root.tag == 'testsuite' else [])
+        for suite in suites:
+            for case in suite.findall('testcase'):
+                name = case.get('name', '')
+                classname = case.get('classname', '')
+                full_name = f"{classname}.{name}" if classname else name
+                failure = case.find('failure')
+                error = case.find('error')
+                if failure is not None or error is not None:
+                    node = failure if failure is not None else error
+                    results.append({
+                        'name': full_name,
+                        'status': 'failed',
+                        'message': (node.get('message') or (node.text or ''))[:500],
+                    })
+    except ET.ParseError:
+        pass
+    return results
+
+
+def _parse_jest_json(content: str) -> List[Dict]:
+    """Extract failed test cases from Jest --json output."""
+    results = []
+    try:
+        data = json.loads(content)
+        if not isinstance(data, dict) or 'testResults' not in data:
+            return []
+        for suite in data.get('testResults', []):
+            for test in suite.get('testResults', []):
+                if test.get('status') == 'failed':
+                    results.append({
+                        'name': test.get('fullName') or test.get('title', ''),
+                        'status': 'failed',
+                        'message': ' '.join(test.get('failureMessages', []))[:500],
+                    })
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return results
+
+
 class TestPulse:
     def __init__(self):
         self.clusterer = DrainClusterer()
@@ -58,11 +111,21 @@ class TestPulse:
     def analyze_logs(self, logs: Dict[str, str]) -> Dict:
         """
         Cluster error patterns from a single CI run's logs.
-        Returns cluster list and total error line count only.
+        When structured output (JUnit XML or Jest JSON) is present in any log file,
+        also extracts named failed tests and returns them as `failed_tests`.
         Flakiness is NOT computed here — it requires cross-run DB analysis.
         """
         all_lines = []
+        parsed_failures = []
+
         for content in logs.values():
+            stripped = content.lstrip()
+            # Try structured parsers before falling back to line scanning
+            if stripped.startswith('<'):
+                parsed_failures.extend(_parse_junit_xml(content))
+            elif stripped.startswith('{') or stripped.startswith('['):
+                parsed_failures.extend(_parse_jest_json(content))
+
             lines = [
                 l for l in content.splitlines()
                 if any(k in l.lower() for k in ['error', 'fail', 'exception', 'traceback'])
@@ -70,7 +133,17 @@ class TestPulse:
             all_lines.extend(lines)
 
         clusters = self.clusterer.cluster(all_lines[:1000])
-        return {
+        result: Dict = {
             "clusters": clusters[:10],
             "total_errors": len(all_lines),
         }
+        if parsed_failures:
+            # Deduplicate by test name, keep first occurrence
+            seen = set()
+            deduped = []
+            for t in parsed_failures:
+                if t['name'] not in seen:
+                    seen.add(t['name'])
+                    deduped.append(t)
+            result["failed_tests"] = deduped[:50]
+        return result

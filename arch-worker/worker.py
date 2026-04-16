@@ -1,6 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
+from typing import Optional
 
 from arq.connections import RedisSettings
 import networkx as nx
@@ -40,7 +41,45 @@ LANGUAGES = {
 from git_client import clone_repository, cleanup_repository
 from import_visitor import import_visitor
 
-async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_token: str, branch: str = "main"):
+def _detect_layer_violations(import_graph, layer_map: dict, repo_dir: str) -> list:
+    """Flag imports that cross forbidden layer boundaries.
+
+    layer_map: {"domain": ["src/domain"], "infra": ["src/db"]}
+    Allowed direction: anything → infra. Forbidden: infra → domain, domain → presentation, etc.
+    The user defines forbidden pairs via repo config; default: infra must not import domain.
+    """
+    violations = []
+    if not layer_map:
+        return violations
+
+    # Build file → layer mapping (match by path prefix)
+    def file_layer(filename: str) -> Optional[str]:
+        for layer, prefixes in layer_map.items():
+            for prefix in prefixes:
+                if filename.startswith(prefix.rstrip('/') + '/') or filename == prefix:
+                    return layer
+        return None
+
+    # Forbidden: higher-abstraction layers importing lower-abstraction layers
+    # Convention: infra should not import domain (infra is a dependency, not the other way)
+    # User can extend via config; here we flag infra → domain as the default rule.
+    forbidden_pairs = [("infra", "domain")]
+    for src_file, dst_file in import_graph.edges():
+        src_layer = file_layer(src_file)
+        dst_layer = file_layer(dst_file)
+        if src_layer and dst_layer and src_layer != dst_layer:
+            if (src_layer, dst_layer) in forbidden_pairs:
+                violations.append({
+                    'file': src_file,
+                    'line': 1,
+                    'type': 'layer_violation',
+                    'severity': 'high',
+                    'msg': f'Layer boundary violation: {src_layer} → {dst_layer} (import of {dst_file})',
+                })
+    return violations
+
+
+async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_token: str, branch: str = "main", layer_map: dict = None):
     """
     ARQ background task to execute the codebase snapshot and ArchSentinel evaluation.
     """
@@ -110,8 +149,8 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
                                 'file_content': file_snippet,
                             })
                         
-                        # Extract imports for cycle detection (python example)
-                        if ext == '.py':
+                        # Extract imports for cycle detection — Python, JS, TS
+                        if ext in ('.py', '.js', '.ts', '.tsx'):
                             import_visitor(tree.root_node, file_path.name, import_graph)
                             
                     except Exception as e:
@@ -120,7 +159,11 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
         # Cycle detection
         cycles = list(nx.simple_cycles(import_graph)) if import_graph.number_of_nodes() > 0 else []
         cycle_violations = [{'cycle': list(c)} for c in cycles[:10]]  # top 10
-        
+
+        # Layer boundary violations (if layer config provided)
+        layer_violations = _detect_layer_violations(import_graph, layer_map or {}, str(repo_dir))
+        violations.extend(layer_violations)
+
         # OPA-like policy evaluation (simple rules)
         total_files = len([f for ext in LANGUAGES for f in lang_stats if f.endswith(ext)])
         if total_files > 1000:

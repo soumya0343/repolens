@@ -50,10 +50,12 @@ class Commit(Base):
     committed_date = Column(DateTime(timezone=True), index=True)
     additions = Column(Integer)
     deletions = Column(Integer)
+    is_merge_commit = Column(Boolean, nullable=False, server_default='false')
+    files_fetch_failed = Column(Boolean, nullable=False, server_default='false')
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # We will compute these metrics later via cron job
-    risk_score = Column(Integer, nullable=True) 
+    risk_score = Column(Integer, nullable=True)
 
 class PullRequest(Base):
     """Stores PRs for the ChronosGraph and general ML processing"""
