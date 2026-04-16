@@ -133,9 +133,21 @@ class CommitFile(Base):
 
 class ArchAnalysis(Base):
     __tablename__ = 'arch_analysis'
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_id = Column(UUID(as_uuid=True), ForeignKey('repos.id', ondelete='CASCADE'), index=True)
     violations = Column(JSON, nullable=True)
     import_cycles = Column(JSON, nullable=True)
     parsed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class RepoScoreSnapshot(Base):
+    """Stores periodic risk score snapshots for the 30-day trend sparkline"""
+    __tablename__ = 'repo_score_snapshots'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repo_id = Column(UUID(as_uuid=True), ForeignKey('repos.id', ondelete='CASCADE'), index=True)
+    score = Column(Integer)
+    label = Column(String(32))
+    breakdown = Column(JSON)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

@@ -1,22 +1,27 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func
+from sqlalchemy import func, text
 import httpx
 import jwt
 import os
+import asyncio
+import datetime
+from collections import defaultdict
 
 from database import get_db
-from models import User, Repo, UserRepo, Commit, PullRequest, PRComment, ArchAnalysis, CommitFile, CIRun
+from models import User, Repo, UserRepo, Commit, PullRequest, PRComment, ArchAnalysis, CommitFile, CIRun, RepoScoreSnapshot
 from worker_pool import get_redis_pool, BACKFILL_QUEUE, CI_QUEUE, ARCH_QUEUE
 from cochange_oracle import get_cochange_oracle
 from churn_analyzer import get_churn_analyzer
 from chronos_graph import get_chronos_graph
 from release_health import get_release_health_tracker
 from risk_scorer import get_unified_risk_scorer
+from llm_explainer import get_llm_explainer
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key")
+DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
 
 async def get_current_user(authorization: str = Header(None), db: AsyncSession = Depends(get_db)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -43,8 +48,8 @@ async def get_current_user(authorization: str = Header(None), db: AsyncSession =
 async def get_available_github_repos(user: User = Depends(get_current_user)):
     """Fetch repositories the user has access to on GitHub"""
     
-    if user.github_token == "mock_github_token":
-        # Return mock data for local development if auth flow was mocked
+    if DEV_MODE and user.github_token == "mock_github_token":
+        # Return mock data only in DEV_MODE
         return [
             {"id": 101, "name": "frontend-monorepo", "owner": {"login": "acme-corp"}, "private": True},
             {"id": 102, "name": "payment-service", "owner": {"login": "acme-corp"}, "private": True},
@@ -201,7 +206,6 @@ async def update_repo_config(
 @router.get("/{repo_id}/files")
 async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get files in a repository with their risk scores"""
-    # Verify user has access to this repo
     result = await db.execute(
         select(Repo).join(UserRepo).where(
             Repo.id == repo_id,
@@ -225,37 +229,78 @@ async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), d
         .group_by(CommitFile.file_path)
         .order_by(func.count(CommitFile.id).desc())
     )
-    
     file_rows = files_result.all()
-    
-    if file_rows:
-        # Build file list from actual data
-        files = []
-        for row in file_rows:
-            file_path = row[0]
-            change_count = row[1]
-            additions = row[2] or 0
-            deletions = row[3] or 0
-            
-            # Calculate risk score based on change frequency
-            # More changes = higher risk (up to 95)
-            risk = min(20 + change_count * 5, 95)
-            
-            files.append({
-                "path": file_path,
-                "language": get_language_from_extension(file_path),
-                "lines": additions + deletions,
-                "risk_score": risk,
-                "changes": change_count,
-                "additions": additions,
-                "deletions": deletions,
-                "violations": []
-            })
-    else:
-        # Fallback to empty list if no files in DB yet
-        files = []
-    
-    return files[:50]  # Limit to 50 files
+
+    if not file_rows:
+        return []
+
+    max_changes = max(row[1] for row in file_rows) or 1
+
+    # Load arch violations once → dict keyed by file path
+    violations_by_file: dict = defaultdict(list)
+    try:
+        arch_result = await db.execute(
+            select(ArchAnalysis).where(ArchAnalysis.repo_id == repo_id)
+            .order_by(ArchAnalysis.parsed_at.desc()).limit(1)
+        )
+        arch = arch_result.scalar_one_or_none()
+        for v in (arch.violations or [] if arch else []):
+            fpath = v.get("file") or v.get("source_file") or ""
+            if fpath:
+                violations_by_file[fpath].append(v)
+    except Exception:
+        pass
+
+    # Load per-file bus-factor HHI once → dict keyed by file path
+    hhi_by_file: dict = {}
+    try:
+        churn_a = await get_churn_analyzer(db)
+        churn_data = await churn_a.analyze_repository(repo_id)
+        for fo in churn_data.get("file_ownership", []):
+            hhi_by_file[fo["file_path"]] = fo.get("bus_factor_hhi", 0.0)
+    except Exception:
+        pass
+
+    # Load coupling scores once → dict keyed by file path (max coupling score)
+    coupling_by_file: dict = {}
+    try:
+        oracle = await get_cochange_oracle(db)
+        coupling_data = await oracle.analyze_repository(repo_id)
+        for lnk in coupling_data.get("links", []):
+            src, tgt, val = lnk.get("source", ""), lnk.get("target", ""), lnk.get("value", 0)
+            coupling_by_file[src] = max(coupling_by_file.get(src, 0), val)
+            coupling_by_file[tgt] = max(coupling_by_file.get(tgt, 0), val)
+    except Exception:
+        pass
+
+    files = []
+    for row in file_rows:
+        file_path = row[0]
+        change_count = row[1]
+        additions = row[2] or 0
+        deletions = row[3] or 0
+
+        # Risk = blend of churn (35pts) + bus-factor HHI (35pts) + violations (30pts)
+        churn_score = (change_count / max_changes) * 35
+        hhi_score = hhi_by_file.get(file_path, 0.0) * 35
+        violation_count = len(violations_by_file.get(file_path, []))
+        violation_score = min(violation_count * 10, 30)
+        # Coupling adds up to 10 bonus points on top
+        coupling_bonus = coupling_by_file.get(file_path, 0.0) * 10
+        risk = min(round(churn_score + hhi_score + violation_score + coupling_bonus), 100)
+
+        files.append({
+            "path": file_path,
+            "language": get_language_from_extension(file_path),
+            "lines": additions + deletions,
+            "risk_score": risk,
+            "changes": change_count,
+            "additions": additions,
+            "deletions": deletions,
+            "violations": violations_by_file.get(file_path, []),
+        })
+
+    return files[:50]
 
 def get_language_from_extension(file_path: str) -> str:
     """Map file extension to language"""
@@ -328,8 +373,38 @@ async def get_repo_violations(repo_id: str, user: User = Depends(get_current_use
     ]
 
 
+async def _save_score_snapshot(repo_id: str, risk: dict):
+    """Background task: save a score snapshot if none recorded in the last 6 hours."""
+    from database import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as session:
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=6)
+            recent = await session.execute(
+                select(RepoScoreSnapshot)
+                .where(RepoScoreSnapshot.repo_id == repo_id, RepoScoreSnapshot.recorded_at >= cutoff)
+                .limit(1)
+            )
+            if recent.scalars().first():
+                return
+            snapshot = RepoScoreSnapshot(
+                repo_id=repo_id,
+                score=risk.get("score", 0),
+                label=risk.get("label", "unknown"),
+                breakdown=risk.get("breakdown"),
+            )
+            session.add(snapshot)
+            await session.commit()
+    except Exception:
+        pass  # Never fail the main request due to snapshot errors
+
+
 @router.get("/{repo_id}/risk")
-async def get_repo_risk(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_repo_risk(
+    repo_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Unified risk score aggregated from all engines"""
     result = await db.execute(
         select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
@@ -342,7 +417,9 @@ async def get_repo_risk(repo_id: str, user: User = Depends(get_current_user), db
     weights = config.get("weights_normalized")  # None = use defaults
 
     scorer = await get_unified_risk_scorer(db)
-    return await scorer.calculate_repo_risk(repo_id, weights)
+    risk = await scorer.calculate_repo_risk(repo_id, weights)
+    background_tasks.add_task(_save_score_snapshot, repo_id, risk)
+    return risk
 
 
 @router.get("/{repo_id}/releases")
@@ -468,14 +545,44 @@ async def get_team_graph(
     )
     interactions = interactions_result.all()
 
-    nodes = [
-        {"id": d[0], "commit_count": d[1]}
-        for d in devs
-    ]
-    edges = [
-        {"source": i[0], "target": i[1], "weight": i[2]}
-        for i in interactions
-    ]
+    nodes = [{"id": d[0], "commit_count": d[1]} for d in devs]
+    edges = [{"source": i[0], "target": i[1], "weight": i[2]} for i in interactions]
+
+    # Compute betweenness centrality (Brandes' algorithm, pure Python)
+    node_ids = [n["id"] for n in nodes]
+    adj: dict = defaultdict(set)
+    for e in edges:
+        adj[e["source"]].add(e["target"])
+        adj[e["target"]].add(e["source"])
+
+    betweenness: dict = {n: 0.0 for n in node_ids}
+    for s in node_ids:
+        stack, pred, sigma, dist = [], defaultdict(list), defaultdict(float), {s: 0}
+        sigma[s] = 1.0
+        queue = [s]
+        while queue:
+            v = queue.pop(0)
+            stack.append(v)
+            for w in adj.get(v, []):
+                if w not in dist:
+                    dist[w] = dist[v] + 1
+                    queue.append(w)
+                if dist[w] == dist[v] + 1:
+                    sigma[w] += sigma[v]
+                    pred[w].append(v)
+        delta: dict = defaultdict(float)
+        while stack:
+            w = stack.pop()
+            for v in pred[w]:
+                if sigma[w]:
+                    delta[v] += (sigma[v] / sigma[w]) * (1 + delta[w])
+            if w != s:
+                betweenness[w] += delta[w]
+
+    # Normalize to 0-1
+    max_b = max(betweenness.values(), default=1) or 1
+    for n in nodes:
+        n["betweenness"] = round(betweenness.get(n["id"], 0) / max_b, 4)
 
     return {"nodes": nodes, "edges": edges}
 
@@ -559,5 +666,159 @@ async def get_developer_expertise(repo_id: str, login: str, user: User = Depends
 
     chronos = await get_chronos_graph(db)
     expertise = await chronos.get_developer_expertise(repo_id, login)
-    
+
     return expertise
+
+
+# ── Score History ─────────────────────────────────────────────────────────────
+
+@router.get("/{repo_id}/score/history")
+async def get_score_history(
+    repo_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """30-day risk score history for the overview sparkline"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    if not result.scalars().first():
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    rows = await db.execute(
+        select(RepoScoreSnapshot)
+        .where(RepoScoreSnapshot.repo_id == repo_id, RepoScoreSnapshot.recorded_at >= cutoff)
+        .order_by(RepoScoreSnapshot.recorded_at.asc())
+    )
+    return [
+        {"recorded_at": r.recorded_at.isoformat(), "score": r.score, "label": r.label}
+        for r in rows.scalars().all()
+    ]
+
+
+# ── File Detail ───────────────────────────────────────────────────────────────
+
+@router.get("/{repo_id}/files/detail")
+async def get_file_detail(
+    repo_id: str,
+    path: str = Query(..., description="File path relative to repo root"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Detailed metrics for a single file: churn history, ownership, coupling rules, violations"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    if not result.scalars().first():
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    # Churn history — weekly buckets for last 90 days
+    cutoff_90 = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
+    churn_rows = await db.execute(
+        select(
+            func.date_trunc("week", Commit.committed_date).label("week"),
+            func.sum(CommitFile.additions).label("additions"),
+            func.sum(CommitFile.deletions).label("deletions"),
+        )
+        .join(Commit, Commit.id == CommitFile.commit_id)
+        .where(
+            Commit.repo_id == repo_id,
+            CommitFile.file_path == path,
+            Commit.committed_date >= cutoff_90,
+        )
+        .group_by(text("week"))
+        .order_by(text("week"))
+    )
+    churn_history = [
+        {"week": str(r.week)[:10], "additions": int(r.additions or 0), "deletions": int(r.deletions or 0)}
+        for r in churn_rows.all()
+    ]
+
+    # Ownership — per-developer commit share for this file
+    owner_rows = await db.execute(
+        select(
+            Commit.author_login,
+            func.count(CommitFile.id).label("commits"),
+        )
+        .join(Commit, Commit.id == CommitFile.commit_id)
+        .where(
+            Commit.repo_id == repo_id,
+            CommitFile.file_path == path,
+            Commit.author_login.isnot(None),
+        )
+        .group_by(Commit.author_login)
+        .order_by(func.count(CommitFile.id).desc())
+    )
+    owner_data = owner_rows.all()
+    total_commits = sum(r.commits for r in owner_data) or 1
+    ownership = [
+        {"contributor": r.author_login, "commits": r.commits, "share": round(r.commits / total_commits, 4)}
+        for r in owner_data
+    ]
+
+    # Coupling rules — files that co-change with this file
+    try:
+        oracle = await get_cochange_oracle(db)
+        coupling_result = await oracle.analyze_repository(repo_id)
+        all_links = coupling_result.get("links", [])
+        coupling_rules = [
+            {"file": lnk["target"] if lnk["source"] == path else lnk["source"], "score": lnk.get("value", 0)}
+            for lnk in all_links
+            if lnk.get("source") == path or lnk.get("target") == path
+        ]
+        coupling_rules.sort(key=lambda x: x["score"], reverse=True)
+    except Exception:
+        coupling_rules = []
+
+    # Violations for this file from the latest arch analysis
+    arch_result = await db.execute(
+        select(ArchAnalysis)
+        .where(ArchAnalysis.repo_id == repo_id)
+        .order_by(ArchAnalysis.parsed_at.desc())
+        .limit(1)
+    )
+    arch = arch_result.scalars().first()
+    all_violations = (arch.violations or []) if arch else []
+    violations = [
+        v for v in all_violations
+        if v.get("file") == path or v.get("source_file") == path
+    ]
+
+    return {
+        "path": path,
+        "churn_history": churn_history,
+        "ownership": ownership,
+        "coupling_rules": coupling_rules,
+        "violations": violations,
+    }
+
+
+# ── Policy Generator ──────────────────────────────────────────────────────────
+
+@router.post("/{repo_id}/policy/generate")
+async def generate_arch_policy_endpoint(
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Auto-generate an architectural policy from violations and repo structure"""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    if not result.scalars().first():
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    arch_result = await db.execute(
+        select(ArchAnalysis)
+        .where(ArchAnalysis.repo_id == repo_id)
+        .order_by(ArchAnalysis.parsed_at.desc())
+        .limit(1)
+    )
+    arch = arch_result.scalars().first()
+    violations = (arch.violations or []) if arch else []
+
+    explainer = await get_llm_explainer()
+    policy = await explainer.generate_arch_policy(repo_stats={}, violations=violations)
+    return {"policy": policy}

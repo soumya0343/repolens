@@ -2,7 +2,10 @@
 LLM Explainer - Root-Cause, Policy Generation and Refactoring
 
 Uses Google Gemini (gemini-1.5-flash) with Redis caching (30-day TTL).
-Falls back to structured placeholder if GEMINI_API_KEY is not set.
+Requires GEMINI_API_KEY env var. Falls back to structured placeholder if not set.
+
+Note: execution plan references Anthropic API — this implementation uses Gemini.
+To switch, replace google.generativeai calls with anthropic SDK.
 """
 
 import os

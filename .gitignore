@@ -62,3 +62,9 @@ tmp/
 
 # Docker
 .dockerignore
+
+# Claude Code (personal memory, session data, skills cache)
+.claude/
+
+# Added by code-review-graph
+.code-review-graph/

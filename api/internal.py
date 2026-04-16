@@ -93,4 +93,21 @@ async def get_bot_analysis(repo_id: str, db: AsyncSession = Depends(get_db)):
             },
         )
 
-    return {"risk": risk, "explanation": explanation}
+    # Arch violations for inline PR annotations
+    arch_result = await db.execute(
+        select(ArchAnalysis)
+        .where(ArchAnalysis.repo_id == repo_id)
+        .order_by(ArchAnalysis.parsed_at.desc())
+        .limit(1)
+    )
+    arch = arch_result.scalars().first()
+    violations = (arch.violations or []) if arch else []
+
+    # Bot config from repo settings
+    config = repo.config or {}
+    bot_config = {
+        "block_threshold": config.get("block_threshold", 75),
+        "warn_only": config.get("warn_only", False),
+    }
+
+    return {"risk": risk, "explanation": explanation, "violations": violations, "config": bot_config}

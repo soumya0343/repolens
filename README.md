@@ -1,26 +1,6 @@
 # RepoLens
 
-RepoLens is a comprehensive repository analysis platform that provides deep insights into software project health, architecture, and development patterns. It combines multiple analysis engines to evaluate code quality, architectural decisions, and team productivity metrics.
-
-## Features
-
-### Phase 1: Foundation ✅
-- **Repository Connection**: GitHub OAuth integration for secure repository access (currently using mock auth - see setup for real OAuth)
-- **Database Layer**: PostgreSQL with TimescaleDB for time-series data, Neo4j for graph analysis
-- **Basic API**: RESTful endpoints for repository management and analysis
-- **Dashboard**: Modern React/TypeScript frontend with real-time updates
-
-### Phase 2: Core Analysis Engines
-- **CoChangeOracle**: File coupling analysis using FP-Growth algorithm with decay-based temporal weighting
-- **ChurnBusFactorAnalyzer**: Developer productivity analysis using Herfindahl-Hirschman Index (HHI)
-- **ArchSentinel**: Architecture compliance checking (placeholder for Phase 3)
-- **TestPulse**: CI/CD failure pattern analysis (placeholder for Phase 3)
-
-### Phase 3: Advanced Features (Planned)
-- **ArchSentinel**: Tree-sitter based AST analysis and OPA policy evaluation
-- **TestPulse**: Log parsing and failure clustering using Drain3
-- **Real-time Monitoring**: WebSocket-based live updates
-- **Advanced Visualizations**: Interactive dependency graphs and risk heatmaps
+GitHub-native SDLC intelligence platform. Transforms raw repository data into actionable developer insights — coupling analysis, architecture violations, bus factor, CI flakiness, team collaboration, and DORA metrics — surfaced via a React dashboard and a GitHub bot that comments on PRs.
 
 ## Architecture
 
@@ -34,254 +14,231 @@ RepoLens is a comprehensive repository analysis platform that provides deep insi
          ▼                       ▼                       ▼
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   PostgreSQL    │    │     Redis       │    │     Neo4j       │
-│ (TimescaleDB)   │    │   (Queue)       │    │   (Graphs)      │
+│ (TimescaleDB)   │    │  (Queue+Cache)  │    │   (ChronosGraph)│
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
+
+**Services:** `api` · `ingestor` · `worker` · `arch-worker` · `ci-worker` · `classifier-worker` · `bot` · `frontend`
+
+## Analysis Engines
+
+| Engine | What it does |
+|--------|-------------|
+| **CoChangeOracle** | FP-Growth on commit history with DERAR decay → file coupling scores |
+| **ArchSentinel** | Tree-sitter AST parsing + OPA policy evaluation → architectural violations |
+| **ChurnBusFactorAnalyzer** | Herfindahl-Hirschman Index on contributor activity → bus factor risk |
+| **ChronosGraph** | Multi-layer Neo4j graph (commits/reviews/authors) → reviewer suggestions, STMC scores |
+| **TestPulse** | Drain3 log clustering + Bayesian flakiness model → flaky test detection |
+| **ReleaseHealthTracker** | DORA metrics (deploy frequency, lead time, CFR, MTTR) from CI run data |
+| **UnifiedRiskScorer** | Weighted aggregation of all six engines → single risk score per repo/PR |
+| **LLMExplainer** | Gemini 1.5 Flash with Redis caching → root-cause explanations, arch policy generation |
 
 ## Quick Start
 
 ### Prerequisites
+
 - Docker and Docker Compose
-- GitHub OAuth App (for authentication)
+- GitHub OAuth App
 
 ### Setup
 
-1. **Clone the repository**
+1. **Clone**
    ```bash
    git clone <repository-url>
    cd repolens
    ```
 
-2. **Environment Configuration**
+2. **Configure environment**
    ```bash
-   # Copy and configure environment files
    cp .env.example .env
-   # Edit .env with your GitHub OAuth credentials
+   # Fill in required values (see Environment Variables below)
    ```
 
-3. **Set up GitHub OAuth (Required for real authentication)**
-   - Go to [GitHub Developer Settings](https://github.com/settings/developers)
-   - Click "New OAuth App"
-   - Fill in:
-     - **Application name**: RepoLens
-     - **Homepage URL**: `http://localhost:5173`
-     - **Authorization callback URL**: `http://localhost:5173/auth/callback`
-   - Copy the Client ID and Client Secret to your `.env` file:
-     ```bash
-     GITHUB_CLIENT_ID=your_actual_client_id
-     GITHUB_CLIENT_SECRET=your_actual_client_secret
-     ```
-   - **Note**: Without real GitHub OAuth credentials, the system will use mock authentication for development
-
-4. **Start the services**
+3. **Start services**
    ```bash
    docker-compose up -d
    ```
 
-5. **Access the application**
+4. **Apply migrations**
+   ```bash
+   docker-compose exec api alembic upgrade head
+   ```
+
+5. **Access**
    - Frontend: http://localhost:5173
    - API: http://localhost:8000
    - API Docs: http://localhost:8000/docs
 
-### GitHub OAuth Setup
+### GitHub OAuth App Setup
 
-1. Go to GitHub Settings → Developer settings → OAuth Apps
-2. Create a new OAuth App with:
-   - Homepage URL: `http://localhost:5173`
-   - Authorization callback URL: `http://localhost:5173/auth/callback`
-3. Copy Client ID and Client Secret to your `.env` file
+1. Go to GitHub Settings → Developer settings → OAuth Apps → New OAuth App
+2. Set **Authorization callback URL** to: `http://localhost:5173/auth/callback`
+3. Copy Client ID and Client Secret to `.env`
 
-## Development
-
-### Local Development Setup
-
-1. **Backend Services**
-   ```bash
-   # Start databases
-   docker-compose up -d postgres redis neo4j
-
-   # Install dependencies and run API
-   cd api
-   pip install -r requirements.txt
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
-   ```
-
-2. **Frontend**
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
-
-3. **Workers**
-   ```bash
-   # In separate terminals
-   cd worker && arq worker.WorkerSettings
-   cd arch-worker && arq worker.WorkerSettings
-   cd ci-worker && arq worker.WorkerSettings
-   ```
-
-### Testing
-
-```bash
-# Run API tests
-cd api && python -m pytest
-
-# Run frontend tests
-cd frontend && npm test
-
-# Manual testing with sample data
-curl -X POST http://localhost:8000/repos/connect \
-  -H "Content-Type: application/json" \
-  -d '{"github_token": "your-token", "owner": "owner", "name": "repo"}'
-```
-
-## API Endpoints
-
-### Repository Management
-- `POST /repos/connect` - Connect a GitHub repository
-- `GET /repos/{repo_id}` - Get repository details
-- `GET /repos/{repo_id}/analysis` - Get analysis results
-
-### Analysis Endpoints
-- `GET /repos/{repo_id}/coupling` - File coupling analysis
-- `GET /repos/{repo_id}/churn` - Churn analysis
-- `GET /repos/{repo_id}/architecture` - Architecture analysis
-
-### Real-time Updates
-- `WebSocket /ws/{repo_id}` - Real-time analysis updates
-
-## Analysis Engines
-
-### CoChangeOracle
-Analyzes file coupling using FP-Growth algorithm with temporal decay:
-- **Input**: Git commit history
-- **Output**: File coupling scores with confidence metrics
-- **Algorithm**: FP-Growth with DERAR decay function
-
-### ChurnBusFactorAnalyzer
-Evaluates developer productivity and bus factor risk:
-- **Input**: Author contribution data
-- **Output**: HHI concentration index and risk scores
-- **Algorithm**: Herfindahl-Hirschman Index calculation
-
-## Configuration
-
-### Environment Variables
+## Environment Variables
 
 ```bash
 # Database
-DATABASE_URL=postgresql://user:password@localhost/repolens
-NEO4J_URI=bolt://localhost:7687
-REDIS_URL=redis://localhost:6379
+DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/repolens
+SYNC_DATABASE_URL=postgresql+psycopg2://user:pass@postgres:5432/repolens
+NEO4J_AUTH=neo4j/your_password
 
-# GitHub OAuth
-GITHUB_CLIENT_ID=your-client-id
-GITHUB_CLIENT_SECRET=your-client-secret
+# Redis
+REDIS_HOST=redis
 
-# Application
-SECRET_KEY=your-secret-key
-FRONTEND_URL=http://localhost:5173
+# GitHub OAuth (required for real auth)
+GITHUB_CLIENT_ID=your_client_id
+GITHUB_CLIENT_SECRET=your_client_secret
+
+# Secrets — must be set to strong random values in production
+JWT_SECRET=your_strong_jwt_secret
+REPOLENS_API_KEY=your_strong_api_key   # shared between api and bot
+
+# LLM (optional — falls back to structured placeholder if unset)
+GEMINI_API_KEY=your_gemini_api_key
+
+# Development only
+DEV_MODE=false   # set to true to bypass GitHub OAuth with mock user
 ```
 
-### Docker Services
+> **Production note:** API will refuse to start if `JWT_SECRET` or `REPOLENS_API_KEY` are left at their default weak values (and `DEV_MODE` is not `true`).
 
-- **api**: FastAPI backend (port 8000)
-- **frontend**: React/TypeScript UI (port 5173)
-- **worker**: Main analysis worker
-- **arch-worker**: Architecture analysis worker
-- **ci-worker**: CI/CD analysis worker
-- **ingestor**: Data ingestion service (port 8001)
-- **postgres**: Primary database
-- **redis**: Queue and caching
-- **neo4j**: Graph database
+## Development Mode
+
+Set `DEV_MODE=true` in `.env` to bypass GitHub OAuth. A mock user (`dev_user`) is created automatically with a mock token. This also suppresses the weak-secret startup check.
+
+```bash
+DEV_MODE=true
+```
+
+## Local Development (without Docker)
+
+```bash
+# Databases only via Docker
+docker-compose up -d postgres redis neo4j
+
+# API
+cd api
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Frontend
+cd frontend
+npm install
+npm run dev
+
+# Workers (separate terminals)
+cd worker && arq worker.WorkerSettings
+cd arch-worker && arq worker.WorkerSettings
+cd ci-worker && arq worker.WorkerSettings
+```
+
+## API Reference
+
+### Auth
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/auth/github/` | Initiate OAuth flow |
+| GET | `/auth/github/callback` | OAuth callback |
+
+### Repositories
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/repos/github/available` | List user's GitHub repos |
+| POST | `/repos/` | Connect a repo + trigger backfill |
+| GET | `/repos/` | List connected repos |
+| GET | `/repos/{id}` | Repo details + stats |
+| PATCH | `/repos/{id}` | Update repo config (risk weights) |
+| POST | `/repos/{id}/backfill` | Re-trigger backfill |
+
+### Analysis
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/repos/{id}/files` | Files with real risk scores (churn + HHI + violations + coupling) |
+| GET | `/repos/{id}/coupling` | CoChangeOracle coupling rules |
+| GET | `/repos/{id}/violations` | ArchSentinel violations |
+| GET | `/repos/{id}/risk` | Unified risk score breakdown |
+| GET | `/repos/{id}/releases` | DORA metrics |
+| GET | `/repos/{id}/tests/flaky` | Flaky test analysis |
+| GET | `/repos/{id}/team/bus-factor` | Bus factor + ownership |
+| GET | `/repos/{id}/team/graph` | Team social graph (nodes + edges) |
+| GET | `/repos/{id}/score/history` | 30-day risk score trend |
+| GET | `/repos/{id}/files/detail` | Per-file churn, ownership, coupling, violations |
+| GET | `/repos/{id}/reviewers/suggest` | Reviewer suggestions from ChronosGraph |
+| POST | `/repos/{id}/policy/generate` | LLM-generated arch policy |
+
+### Pull Requests
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/repos/{id}/prs` | List PRs with predicted risk |
+| GET | `/repos/{id}/prs/{pr_id}` | PR detail |
+| POST | `/repos/{id}/prs/{pr_id}/explain` | LLM risk explanation |
+
+### WebSocket
+| Path | Description |
+|------|-------------|
+| `ws://host/ws/progress/{repo_id}` | Backfill progress stream |
+| `ws://host/ws/repos/{repo_id}/live` | Live PR risk score stream |
+
+### Chat
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/chat` | LLM assistant with 6 tool-use tools |
+
+## GitHub Bot
+
+The bot listens for `pull_request` webhooks and:
+1. Creates a pending GitHub Check Run
+2. Fetches risk analysis from the internal API
+3. Posts a structured PR comment with score breakdown and recommended actions
+4. Posts inline diff annotations for architectural violations
+5. Updates the Check Run to pass/fail based on configurable threshold
+
+**Required env vars for bot:**
+```bash
+GITHUB_APP_ID=
+GITHUB_PRIVATE_KEY=        # PEM key, newlines as \n
+GITHUB_WEBHOOK_SECRET=
+REPOLENS_API_URL=http://api:8000
+REPOLENS_API_KEY=          # must match api's REPOLENS_API_KEY
+```
+
+## File Risk Score Formula
+
+Each file's risk score (0–100) is computed from four real signals:
+
+| Signal | Max points | Source |
+|--------|-----------|--------|
+| Churn (change frequency) | 35 | `commit_files` table |
+| Bus factor (per-file HHI) | 35 | ChurnBusFactorAnalyzer |
+| Architectural violations | 30 | ArchSentinel / ArchAnalysis |
+| Coupling bonus | 10 | CoChangeOracle |
 
 ## Troubleshooting
 
-### Common Issues
+**API won't start (weak secret error)**
+Set strong values for `JWT_SECRET` and `REPOLENS_API_KEY` in `.env`, or set `DEV_MODE=true` for local development.
 
-1. **Mock Authentication Instead of Real GitHub OAuth**
-   - **Symptom**: "Sign in with GitHub" redirects to callback with mock data
-   - **Cause**: GitHub OAuth credentials not configured in `.env`
-   - **Solution**: Follow the GitHub OAuth setup steps above and replace placeholder values in `.env`
+**Mock auth instead of real GitHub**
+Ensure `DEV_MODE=false` (default) and `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` are set in `.env`.
 
-2. **Worker Connection Errors**
-   - Ensure Redis is running: `docker-compose logs redis`
-   - Check worker logs: `docker-compose logs worker`
-
-3. **Database Connection Issues**
-   - Verify PostgreSQL is healthy: `docker-compose exec postgres pg_isready`
-   - Check connection string in environment variables
-
-3. **GitHub API Rate Limits**
-   - Monitor API usage in GitHub settings
-   - Implement token rotation for high-volume analysis
-
-4. **Memory Issues**
-   - Increase Docker memory limits
-   - Monitor Neo4j heap usage
-
-### Logs and Debugging
-
+**Worker connection errors**
 ```bash
-# View all service logs
-docker-compose logs
-
-# View specific service logs
-docker-compose logs api
-
-# Follow logs in real-time
-docker-compose logs -f worker
-
-# Check service health
-docker-compose ps
+docker-compose logs worker
+docker-compose logs redis
 ```
 
-## Contributing
+**Database issues**
+```bash
+docker-compose exec postgres pg_isready
+docker-compose exec api alembic upgrade head
+```
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Make your changes and add tests
-4. Run the test suite: `docker-compose exec api python -m pytest`
-5. Submit a pull request
+**GitHub API rate limits**
+Use a GitHub App installation token (higher rate limits than OAuth tokens) or add token rotation.
 
-### Development Guidelines
-
-- Follow PEP 8 for Python code
-- Use TypeScript strict mode for frontend
-- Add tests for new features
-- Update documentation for API changes
-- Use conventional commits
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Roadmap
-
-### Phase 3: Advanced Analysis
-- [ ] Tree-sitter AST analysis
-- [ ] OPA policy evaluation
-- [ ] Drain3 log parsing
-- [ ] Real-time WebSocket updates
-- [ ] Advanced visualizations
-
-### Phase 4: Enterprise Features
-- [ ] Multi-repository analysis
-- [ ] Team productivity dashboards
-- [ ] Integration with CI/CD pipelines
-- [ ] Custom rule engines
-- [ ] Export and reporting
-
-## Support
-
-For questions and support:
-- Open an issue on GitHub
-- Check the documentation
-- Review the troubleshooting guide
-
-## Acknowledgments
-
-- FP-Growth algorithm implementation inspired by MLxtend
-- HHI calculations based on economic concentration metrics
-- Architecture analysis concepts from software engineering research
+**Local PostgreSQL port conflict**
+```bash
+brew services stop postgresql@16
+```
+Then restart: `docker-compose up -d postgres`

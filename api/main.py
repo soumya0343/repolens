@@ -17,11 +17,22 @@ import models  # ensure all model classes are registered with Base
 app = FastAPI()
 
 
+_WEAK_SECRETS = {"super_secret_jwt_key", "internal_key", ""}
+_DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
+
 @app.on_event("startup")
 async def on_startup():
     """Create any missing tables on startup (idempotent — won't touch existing tables)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    if not _DEV_MODE:
+        jwt_secret = os.getenv("JWT_SECRET", "super_secret_jwt_key")
+        api_key = os.getenv("REPOLENS_API_KEY", "internal_key")
+        if jwt_secret in _WEAK_SECRETS:
+            raise RuntimeError("FATAL: JWT_SECRET is using an insecure default. Set a strong value in .env")
+        if api_key in _WEAK_SECRETS:
+            raise RuntimeError("FATAL: REPOLENS_API_KEY is using an insecure default. Set a strong value in .env")
  
 app.include_router(internal_router)
 app.include_router(internal_ci_router)

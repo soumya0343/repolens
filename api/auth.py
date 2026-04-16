@@ -11,20 +11,24 @@ from models import User
 
 router = APIRouter(prefix="/auth/github", tags=["auth"])
 
-GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "local_client_placeholder")
-GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "local_secret_placeholder")
+DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 @router.get("/")
 async def github_login():
     """Initiate GitHub OAuth flow"""
-    if GITHUB_CLIENT_ID == "local_client_placeholder":
-        # Bypass real GitHub login for local development
+    if DEV_MODE:
+        # Bypass real GitHub login for local development (DEV_MODE=true)
         return {
             "redirect_url": f"{FRONTEND_URL}/auth/callback?code=mock_code_123"
         }
-        
+
+    if not GITHUB_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="GITHUB_CLIENT_ID not configured")
+
     return {
         "redirect_url": f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}&scope=repo read:org read:user"
     }
@@ -39,11 +43,10 @@ async def github_callback(code: str, db: AsyncSession = Depends(get_db)):
         "client_secret": GITHUB_CLIENT_SECRET,
         "code": code
     }
-    
+
     async with httpx.AsyncClient() as client:
-        # If running without real credentials, mock the process for local development
-        if GITHUB_CLIENT_ID == "local_client_placeholder":
-            # Mock dev login
+        if DEV_MODE:
+            # Mock dev login (DEV_MODE=true only)
             user_data = {"id": 12345, "login": "dev_user", "email": "dev@repolens.com", "avatar_url": ""}
             access_token = "mock_github_token"
         else:

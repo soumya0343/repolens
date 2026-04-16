@@ -38,8 +38,8 @@ const REPOLENS_API = (process.env.REPOLENS_API_URL || 'http://api:8000').replace
 const API_KEY      = process.env.REPOLENS_API_KEY || 'internal_key';
 const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || '';
 
-// Risk threshold above which the check run fails (blocking merge if branch protection is on)
-const CRITICAL_THRESHOLD = 75;
+// Default risk threshold — overridden per-repo by config.block_threshold from the API
+const DEFAULT_CRITICAL_THRESHOLD = 75;
 
 // ── Webhook signature verification ─────────────────────────────────────────
 function verifySignature(req, rawBody) {
@@ -198,10 +198,18 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   const repolensRepo = await getRepoLensRepo(owner, repoName);
   let risk, explanation;
 
+  let violations = [];
+  let botConfig  = { block_threshold: DEFAULT_CRITICAL_THRESHOLD, warn_only: false };
+
   if (repolensRepo) {
     const analysis = await getRisk(repolensRepo.id);
-    risk        = analysis?.risk  ?? { score: 0, label: 'unknown', breakdown: {} };
+    risk        = analysis?.risk        ?? { score: 0, label: 'unknown', breakdown: {} };
     explanation = analysis?.explanation ?? null;
+    violations  = analysis?.violations  ?? [];
+    if (analysis?.config) {
+      botConfig.block_threshold = analysis.config.block_threshold ?? DEFAULT_CRITICAL_THRESHOLD;
+      botConfig.warn_only       = analysis.config.warn_only       ?? false;
+    }
   } else {
     console.warn(`[bot] ${owner}/${repoName} not connected to RepoLens`);
     risk        = { score: 0, label: 'unknown', breakdown: {} };
@@ -210,7 +218,7 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   const commentBody = formatComment(risk, explanation, owner, repoName, prNumber);
 
-  // Post PR comment
+  // Post PR body comment
   try {
     await octokit.issues.createComment({ owner, repo: repoName, issue_number: prNumber, body: commentBody });
     console.log(`[bot] Comment posted on PR #${prNumber}`);
@@ -218,11 +226,46 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
     console.error('[bot] Could not post comment:', e.message);
   }
 
-  // Update check run
+  // Post inline diff annotations for architectural violations
+  if (violations.length > 0) {
+    try {
+      // Get the files changed in this PR
+      const filesRes = await octokit.pulls.listFiles({ owner, repo: repoName, pull_number: prNumber });
+      const changedFiles = new Set(filesRes.data.map(f => f.filename));
+
+      const reviewComments = violations
+        .filter(v => {
+          const filePath = v.file || v.source_file || '';
+          return changedFiles.has(filePath) && (v.line || v.line_number) > 0;
+        })
+        .map(v => ({
+          path: v.file || v.source_file,
+          line: v.line || v.line_number || 1,
+          side: 'RIGHT',
+          body: `**[RepoLens] ${v.type || 'Arch Violation'}** *(${v.severity || 'warning'})*: ${v.description || v.message || 'Layer boundary violation detected.'}`,
+        }));
+
+      if (reviewComments.length > 0) {
+        await octokit.pulls.createReview({
+          owner, repo: repoName, pull_number: prNumber,
+          commit_id: headSha,
+          event: 'COMMENT',
+          comments: reviewComments,
+        });
+        console.log(`[bot] Posted ${reviewComments.length} inline annotation(s) on PR #${prNumber}`);
+      }
+    } catch (e) {
+      // Inline annotations can fail if line numbers are outside the diff — log and continue
+      console.warn('[bot] Could not post inline annotations:', e.message);
+    }
+  }
+
+  // Update check run — respect per-repo warn_only config
   if (checkRunId) {
     try {
-      const score      = risk.score ?? 0;
-      const conclusion = score >= CRITICAL_THRESHOLD ? 'failure' : 'success';
+      const score = risk.score ?? 0;
+      const exceedsThreshold = score >= botConfig.block_threshold;
+      const conclusion = (exceedsThreshold && !botConfig.warn_only) ? 'failure' : 'success';
       await octokit.checks.update({
         owner, repo: repoName, check_run_id: checkRunId,
         status: 'completed', conclusion,
@@ -232,7 +275,7 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
           text: commentBody,
         },
       });
-      console.log(`[bot] Check run updated: ${conclusion}`);
+      console.log(`[bot] Check run updated: ${conclusion} (threshold=${botConfig.block_threshold}, warn_only=${botConfig.warn_only})`);
     } catch (e) {
       console.error('[bot] Could not update check run:', e.message);
     }
