@@ -350,11 +350,11 @@ async def get_repo_coupling(repo_id: str, user: User = Depends(get_current_user)
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    # Get CoChangeOracle instance and analyze
-    oracle = await get_cochange_oracle(db)
-    coupling_data = await oracle.analyze_repository(repo_id)
-
-    return coupling_data
+    try:
+        oracle = await get_cochange_oracle(db)
+        return await oracle.analyze_repository(repo_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Coupling analysis failed: {e}")
 
 @router.get("/{repo_id}/violations")
 async def get_repo_violations(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
@@ -455,8 +455,11 @@ async def get_repo_releases(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    tracker = await get_release_health_tracker(db)
-    return await tracker.get_dora_metrics(repo_id, days)
+    try:
+        tracker = await get_release_health_tracker(db)
+        return await tracker.get_dora_metrics(repo_id, days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DORA metrics failed: {e}")
 
 
 @router.get("/{repo_id}/tests/flaky")
@@ -474,10 +477,13 @@ async def get_flaky_tests(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    from test_pulse import get_test_pulse
-    pulse = await get_test_pulse(db=db)
-    flaky_workflows = await pulse.analyze_flakiness(repo_id)
-    return flaky_workflows[:limit]
+    try:
+        from test_pulse import get_test_pulse
+        pulse = await get_test_pulse(db=db)
+        flaky_workflows = await pulse.analyze_flakiness(repo_id)
+        return flaky_workflows[:limit]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Flaky test analysis failed: {e}")
 
 
 @router.get("/{repo_id}/team/bus-factor")
@@ -494,8 +500,11 @@ async def get_bus_factor(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    churn_a = await get_churn_analyzer(db)
-    return await churn_a.analyze_repository(repo_id)
+    try:
+        churn_a = await get_churn_analyzer(db)
+        return await churn_a.analyze_repository(repo_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Bus factor analysis failed: {e}")
 
 
 @router.get("/{repo_id}/team/graph")

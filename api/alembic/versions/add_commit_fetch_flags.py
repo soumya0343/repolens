@@ -15,10 +15,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column('commits', sa.Column('is_merge_commit', sa.Boolean(),
-                                       nullable=False, server_default='false'))
-    op.add_column('commits', sa.Column('files_fetch_failed', sa.Boolean(),
-                                       nullable=False, server_default='false'))
+    conn = op.get_bind()
+    existing = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='commits'"
+    ))}
+    if 'is_merge_commit' not in existing:
+        op.add_column('commits', sa.Column('is_merge_commit', sa.Boolean(),
+                                           nullable=False, server_default='false'))
+    if 'files_fetch_failed' not in existing:
+        op.add_column('commits', sa.Column('files_fetch_failed', sa.Boolean(),
+                                           nullable=False, server_default='false'))
 
 
 def downgrade() -> None:
