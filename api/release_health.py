@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, and_
 
-from models import PullRequest, Commit, CIRun
+from models import PullRequest, Commit, CIRun, Repo
 
 class ReleaseHealthTracker:
     def __init__(self, db: AsyncSession):
@@ -26,7 +26,12 @@ class ReleaseHealthTracker:
         Calculate DORA metrics for a repository over a given period.
         """
         since = datetime.now(timezone.utc) - timedelta(days=days)
-        
+
+        # Fetch repo's current default branch for CFR + MTTR filtering
+        repo_result = await self.db.execute(select(Repo).where(Repo.id == repo_id))
+        repo = repo_result.scalar_one_or_none()
+        default_branch = repo.default_branch if repo else None
+
         # 1. Deployment Frequency
         # Using merged PRs as a proxy for deployments
         pr_stmt = select(func.count(PullRequest.id)).where(
@@ -56,36 +61,44 @@ class ReleaseHealthTracker:
         avg_lead_time = (sum(durations) / len(durations) / 3600) if durations else 0 # in hours
         
         # 3. Change Failure Rate
-        # Percentage of CI runs that failed on the default branch (post-merge)
+        # Only post-merge pushes to the default branch — not scheduled runs, PRs, or manual triggers.
+        # Rows without event/head_branch are legacy (pre-schema-fix) — excluded via IS NOT NULL.
+        cfr_filters = [
+            CIRun.repo_id == repo_id,
+            CIRun.created_at >= since,
+            CIRun.event == "push",
+            CIRun.event.isnot(None),
+        ]
+        if default_branch:
+            cfr_filters.append(CIRun.head_branch == default_branch)
+
         ci_stmt = select(func.count(CIRun.id), CIRun.conclusion).where(
-            and_(
-                CIRun.repo_id == repo_id,
-                CIRun.created_at >= since
-            )
+            and_(*cfr_filters)
         ).group_by(CIRun.conclusion)
-        
+
         ci_result = await self.db.execute(ci_stmt)
         ci_stats = {row[1]: row[0] for row in ci_result.all()}
-        
+
         total_ci = sum(ci_stats.values())
         failed_ci = ci_stats.get('failure', 0)
-        cfr = (failed_ci / total_ci) if total_ci > 0 else 0
-        
+        cfr = (failed_ci / total_ci) if total_ci > 0 else None
+
         # 4. Mean Time to Restore (MTTR)
-        # For each failure run, find the next success run and measure the gap.
+        # Same filter as CFR: push events on default branch only.
+        mttr_base = [
+            CIRun.repo_id == repo_id,
+            CIRun.event == "push",
+            CIRun.event.isnot(None),
+        ]
+        if default_branch:
+            mttr_base.append(CIRun.head_branch == default_branch)
+
         failure_times_stmt = select(CIRun.updated_at).where(
-            and_(
-                CIRun.repo_id == repo_id,
-                CIRun.conclusion == "failure",
-                CIRun.created_at >= since,
-            )
+            and_(*mttr_base, CIRun.conclusion == "failure", CIRun.created_at >= since)
         ).order_by(CIRun.updated_at)
 
         success_times_stmt = select(CIRun.created_at).where(
-            and_(
-                CIRun.repo_id == repo_id,
-                CIRun.conclusion == "success",
-            )
+            and_(*mttr_base, CIRun.conclusion == "success")
         ).order_by(CIRun.created_at)
 
         failure_times = [r[0] for r in (await self.db.execute(failure_times_stmt)).all() if r[0]]
@@ -116,9 +129,9 @@ class ReleaseHealthTracker:
                 "label": "Hours from PR to Merge"
             },
             "change_failure_rate": {
-                "value": round(cfr * 100, 1),
-                "rating": self._rate_cfr(cfr),
-                "label": "Percentage of failed CI runs"
+                "value": round(cfr * 100, 1) if cfr is not None else None,
+                "rating": self._rate_cfr(cfr) if cfr is not None else "unavailable",
+                "label": "Percentage of failed CI runs on default branch (push events only)",
             },
             "time_to_restore": {
                 "value": round(avg_mttr_hours, 1) if avg_mttr_hours is not None else None,

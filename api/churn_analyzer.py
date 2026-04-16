@@ -67,113 +67,157 @@ class ChurnBusFactorAnalyzer:
             "recommendations": risk_assessment["recommendations"]
         }
 
-    async def _get_contributor_stats(self, repo_id: str) -> Dict[str, Dict]:
-        """Get comprehensive contributor statistics with temporal decay."""
-        # Get all commits for the repository
-        result = await self.db.execute(
-            select(Commit.author_login, Commit.author_email, Commit.committed_date, func.count(Commit.id))
-            .where(Commit.repo_id == repo_id)
-            .group_by(Commit.author_login, Commit.author_email, Commit.committed_date)
-        )
+    # File path patterns to exclude from lines-changed HHI — lockfiles and generated code
+    # skew ownership toward whoever last ran package install or codegen.
+    _EXCLUDE_PATH_PATTERNS = [
+        '%package-lock.json',
+        '%yarn.lock',
+        '%pnpm-lock.yaml',
+        '%Cargo.lock',
+        '%poetry.lock',
+        '%Gemfile.lock',
+        '%.pb.go',
+        '%.generated.%',
+        '%_pb2.py',
+        '%/__generated__/%',
+        '%.min.js',
+        '%.min.css',
+    ]
 
-        contributor_activity = defaultdict(lambda: {"commits": [], "total_weighted_commits": 0.0})
+    async def _get_contributor_stats(self, repo_id: str) -> Dict[str, Dict]:
+        """Get contributor statistics with temporal decay, weighted by lines changed.
+
+        Groups by (author_login, commit date) — NOT by (login, email, date) which
+        produced one row per author per day inflating counts.
+
+        HHI is computed on decay-weighted lines changed (additions + deletions),
+        excluding lockfiles and generated code which skew ownership.
+        """
+        # Build exclusion filter
+        from sqlalchemy import not_, or_
+        exclusions = or_(*[CommitFile.file_path.like(p) for p in self._EXCLUDE_PATH_PATTERNS])
+
+        # Per-commit lines changed (excluding noisy files), grouped by author
+        result = await self.db.execute(
+            select(
+                Commit.author_login,
+                Commit.committed_date,
+                func.sum(CommitFile.additions + CommitFile.deletions).label("lines_changed"),
+            )
+            .join(CommitFile, CommitFile.commit_id == Commit.id)
+            .where(
+                Commit.repo_id == repo_id,
+                Commit.author_login.isnot(None),
+                not_(exclusions),
+            )
+            .group_by(Commit.id, Commit.author_login, Commit.committed_date)
+        )
 
         rows = result.all()
         if not rows:
             return {}
 
-        # Find the most recent commit date
-        all_dates = [row[2] for row in rows if row[2]]
+        all_dates = [row[1] for row in rows if row[1]]
         if not all_dates:
             return {}
-
         latest_date = max(all_dates)
 
-        for author_login, author_email, commit_date, commit_count in rows:
+        contributor_activity: Dict[str, Dict] = defaultdict(
+            lambda: {"commits": [], "total_weighted_lines": 0.0}
+        )
+
+        for author_login, commit_date, lines_changed in rows:
             if not author_login or not commit_date:
                 continue
-
-            # Use login as primary key, fallback to email
-            contributor_key = author_login
-
-            # Calculate temporal weight using exponential decay
+            lines = lines_changed or 0
             days_diff = (latest_date - commit_date).days
             weight = math.exp(-days_diff / self.decay_half_life)
-
-            weighted_commits = commit_count * weight
-
-            contributor_activity[contributor_key]["commits"].append({
+            contributor_activity[author_login]["commits"].append({
                 "date": commit_date,
-                "count": commit_count,
-                "weight": weight
+                "lines": lines,
+                "weight": weight,
             })
-            contributor_activity[contributor_key]["total_weighted_commits"] += weighted_commits
+            contributor_activity[author_login]["total_weighted_lines"] += lines * weight
 
         return dict(contributor_activity)
 
     def _calculate_bus_factor(self, contributor_stats: Dict[str, Dict]) -> Dict:
-        """Calculate Herfindahl-Hirschman Index and bus factor metrics."""
+        """Calculate HHI weighted by decay-adjusted lines changed (not commit count)."""
         if not contributor_stats:
-            return {"overall_hhi": 0.0, "contributors": []}
+            return {"overall_hhi": None, "contributors": []}
 
-        # Calculate total weighted commits
-        total_weighted_commits = sum(stats["total_weighted_commits"] for stats in contributor_stats.values())
+        total_weighted_lines = sum(
+            stats["total_weighted_lines"] for stats in contributor_stats.values()
+        )
+        if total_weighted_lines == 0:
+            return {"overall_hhi": None, "contributors": []}
 
-        if total_weighted_commits == 0:
-            return {"overall_hhi": 0.0, "contributors": []}
-
-        # Calculate HHI (Herfindahl-Hirschman Index)
         hhi = 0.0
         contributors = []
 
         for contributor, stats in contributor_stats.items():
-            share = stats["total_weighted_commits"] / total_weighted_commits
+            share = stats["total_weighted_lines"] / total_weighted_lines
             hhi += share ** 2
-
             contributors.append({
                 "name": contributor,
-                "weighted_commits": stats["total_weighted_commits"],
+                "weighted_lines": stats["total_weighted_lines"],
                 "share": share,
-                "commit_count": len(stats["commits"])
+                "commit_count": len(stats["commits"]),
             })
 
-        # Sort contributors by weighted commits
-        contributors.sort(key=lambda x: x["weighted_commits"], reverse=True)
+        contributors.sort(key=lambda x: x["weighted_lines"], reverse=True)
 
         return {
             "overall_hhi": hhi,
-            "contributors": contributors[:10]  # Top 10 contributors
+            "contributors": contributors[:10],
         }
 
     async def _analyze_file_ownership(self, repo_id: str) -> List[Dict]:
-        """Analyze ownership patterns for individual files using CommitFile data."""
+        """Analyze ownership for ALL files, weighted by lines changed.
+
+        Previously capped at top 20 files — that cap is removed. HHI is now
+        computed on lines changed rather than commit count to match the repo-level metric.
+        Lockfiles and generated files are excluded (same patterns as contributor stats).
+        """
+        from sqlalchemy import not_, or_
+        exclusions = or_(*[CommitFile.file_path.like(p) for p in self._EXCLUDE_PATH_PATTERNS])
+
         result = await self.db.execute(
-            select(CommitFile.file_path, Commit.author_login, func.count(CommitFile.id).label("cnt"))
+            select(
+                CommitFile.file_path,
+                Commit.author_login,
+                func.sum(CommitFile.additions + CommitFile.deletions).label("lines"),
+            )
             .join(Commit, Commit.id == CommitFile.commit_id)
-            .where(Commit.repo_id == repo_id, Commit.author_login.isnot(None))
+            .where(
+                Commit.repo_id == repo_id,
+                Commit.author_login.isnot(None),
+                not_(exclusions),
+            )
             .group_by(CommitFile.file_path, Commit.author_login)
-            .order_by(CommitFile.file_path, func.count(CommitFile.id).desc())
         )
         rows = result.all()
 
         if not rows:
             return []
 
-        # Group contributions by file
         files_dict: dict = defaultdict(list)
-        for file_path, author, cnt in rows:
-            files_dict[file_path].append({"contributor": author, "commits": cnt})
+        for file_path, author, lines in rows:
+            files_dict[file_path].append({"contributor": author, "lines": lines or 0})
 
         file_ownership = []
-        for file_path, contribs in list(files_dict.items())[:20]:  # top 20 most active files
-            total = sum(c["commits"] for c in contribs)
+        for file_path, contribs in files_dict.items():
+            total = sum(c["lines"] for c in contribs)
+            if total == 0:
+                continue
+            contribs.sort(key=lambda c: c["lines"], reverse=True)
             ownership = [
                 {
                     "contributor": c["contributor"],
-                    "ownership_percentage": c["commits"] / total,
-                    "commits_to_file": c["commits"],
+                    "ownership_percentage": c["lines"] / total,
+                    "lines_to_file": c["lines"],
                 }
-                for c in contribs[:5]  # top 5 contributors per file
+                for c in contribs[:5]
             ]
             shares = [o["ownership_percentage"] for o in ownership]
             file_hhi = sum(s ** 2 for s in shares)
@@ -232,11 +276,11 @@ class ChurnBusFactorAnalyzer:
     def _empty_analysis(self) -> Dict:
         """Return empty analysis structure when no data is available."""
         return {
-            "overall_bus_factor": 0.0,
-            "risk_level": "unknown",
+            "overall_bus_factor": None,
+            "risk_level": None,
             "contributors": [],
             "file_ownership": [],
-            "recommendations": ["No commit data available for analysis"]
+            "recommendations": [],
         }
 
 

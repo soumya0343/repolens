@@ -42,6 +42,8 @@ async def run_ci_backfill(ctx, repo_id: str, owner: str, name: str, github_token
                     'analysis': analysis,
                     'head_sha': run.get("head_sha", ""),
                     'name': run.get("name", "CI"),
+                    'event': run.get("event"),
+                    'head_branch': run.get("head_branch"),
                 })
         except Exception as e:
             print(f"  Run {run.get('id')} failed, skipping: {e}")

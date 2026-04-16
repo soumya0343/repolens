@@ -133,6 +133,43 @@ async def bulk_insert_prs(db: AsyncSession, prs: list[dict]):
     print(f"PR bulk insert complete. Result: {result}")
 
 
+async def bulk_insert_pr_files(db: AsyncSession, pr_files: list[dict]):
+    """Bulk insert PR file records using PostgreSQL COPY.
+    pr_files: list of dicts with keys: id, pr_id, path, additions, deletions, change_type
+    """
+    if not pr_files:
+        return
+
+    connection = await db.connection()
+    raw_conn = await connection.get_raw_connection()
+
+    buffer = io.StringIO()
+    for pf in pr_files:
+        row = "\t".join([
+            str(pf['id']),
+            str(pf['pr_id']),
+            str(pf['path']),
+            str(pf.get('additions', 0)),
+            str(pf.get('deletions', 0)),
+            str(pf.get('change_type', 'MODIFIED')),
+        ]) + "\n"
+        buffer.write(row)
+
+    buffer.seek(0)
+    buffer_bytes = io.BytesIO(buffer.getvalue().encode('utf-8'))
+    buffer_bytes.seek(0)
+
+    result = await raw_conn.driver_connection.copy_to_table(
+        'pr_files',
+        source=buffer_bytes,
+        columns=['id', 'pr_id', 'path', 'additions', 'deletions', 'change_type'],
+        format='csv',
+        delimiter='\t',
+        null='',
+    )
+    print(f"PR files bulk insert complete. Result: {result}")
+
+
 async def bulk_insert_issues(db: AsyncSession, issues: list[dict]):
     # TBD
     pass

@@ -7,11 +7,11 @@ import uuid
 import httpx
 from datetime import datetime, timezone
 from arq.connections import RedisSettings
-from github_client import fetch_commits_batch, fetch_commit_files, fetch_prs_batch
+from github_client import fetch_commits_batch, fetch_commit_files, fetch_prs_batch, fetch_repo_default_branch
 from database import AsyncSessionLocal
 from models import Repo
 from sqlalchemy.future import select
-from db_writer import bulk_insert_commits, bulk_insert_commit_files, bulk_insert_prs
+from db_writer import bulk_insert_commits, bulk_insert_commit_files, bulk_insert_prs, bulk_insert_pr_files
 from models import Commit
 
 async def run_backfill_job(ctx, repo_id: str, github_token: str):
@@ -30,6 +30,17 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
 
         owner = repo.owner
         name = repo.name
+
+        # Re-fetch default_branch to detect drift (rename master→main, switch to develop, etc.)
+        try:
+            current_default_branch = await fetch_repo_default_branch(github_token, owner, name)
+            if repo.default_branch != current_default_branch:
+                print(f"[INFO] default_branch drifted: '{repo.default_branch}' → '{current_default_branch}'")
+                repo.default_branch = current_default_branch
+                await db.commit()
+        except Exception as e:
+            print(f"[WARN] Could not re-fetch default_branch for {owner}/{name}: {e}")
+
         cursor = None
         has_next_page = True
         total_commits = 0
@@ -162,12 +173,14 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                     break
 
                 prs_to_insert = []
+                pr_files_to_insert = []
                 for node in pr_nodes:
                     github_id = str(node.get("databaseId", ""))
                     if not github_id:
                         continue
+                    pr_id = str(uuid.uuid4())
                     prs_to_insert.append({
-                        "id": str(uuid.uuid4()),
+                        "id": pr_id,
                         "repo_id": str(repo.id),
                         "github_id": github_id,
                         "number": node.get("number", 0),
@@ -179,10 +192,29 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                         "merged_at": node.get("mergedAt", "") or "",
                     })
 
+                    # Ingest PR files (first 100 — pagination skipped for v1 per spec)
+                    files_data = node.get("files", {}).get("nodes", [])
+                    for f in files_data:
+                        path = f.get("path", "")
+                        if not path:
+                            continue
+                        pr_files_to_insert.append({
+                            "id": str(uuid.uuid4()),
+                            "pr_id": pr_id,
+                            "path": path,
+                            "additions": f.get("additions", 0),
+                            "deletions": f.get("deletions", 0),
+                            "change_type": (f.get("changeType") or "MODIFIED").upper(),
+                        })
+
                 if prs_to_insert:
                     await bulk_insert_prs(db, prs_to_insert)
                     total_prs += len(prs_to_insert)
                     print(f"  Inserted {len(prs_to_insert)} PRs (total {total_prs})")
+
+                if pr_files_to_insert:
+                    await bulk_insert_pr_files(db, pr_files_to_insert)
+                    print(f"  Inserted {len(pr_files_to_insert)} PR file records")
 
                 pr_has_next = pr_page.get("pageInfo", {}).get("hasNextPage", False)
                 pr_cursor = pr_page.get("pageInfo", {}).get("endCursor")

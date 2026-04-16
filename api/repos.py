@@ -68,16 +68,34 @@ async def get_available_github_repos(user: User = Depends(get_current_user)):
             raise HTTPException(status_code=response.status_code, detail="Failed to fetch repos from GitHub")
         return response.json()
 
+async def _fetch_default_branch(token: str, owner: str, name: str) -> str:
+    """Fetch current default branch from GitHub — do not trust frontend payload."""
+    import httpx as _httpx
+    async with _httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{name}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        return resp.json()["default_branch"]
+
+
 @router.post("/")
 async def connect_repository(payload: dict, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Connect a new repository and trigger backfill"""
     github_id = str(payload.get("github_id"))
     owner = payload.get("owner")
     name = payload.get("name")
-    default_branch = payload.get("default_branch", "main")
-    
+
     if not github_id or not owner or not name:
         raise HTTPException(status_code=400, detail="Missing repository details")
+
+    # Validate default_branch server-side — do not trust frontend payload
+    try:
+        default_branch = await _fetch_default_branch(user.github_token, owner, name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Unable to verify repository with GitHub: {e}")
 
     # Check if repo exists globally
     result = await db.execute(select(Repo).where(Repo.github_id == github_id))
@@ -456,39 +474,10 @@ async def get_flaky_tests(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    # Query CI runs that have been analyzed
-    ci_result = await db.execute(
-        select(CIRun)
-        .where(
-            CIRun.repo_id == repo_id,
-            CIRun.analysis_results.isnot(None),
-        )
-        .order_by(CIRun.created_at.desc())
-        .limit(200)
-    )
-    ci_runs = ci_result.scalars().all()
-
-    # Aggregate flakiness signals across runs
-    tests = []
-    for run in ci_runs:
-        ar = run.analysis_results or {}
-        tests.append({
-            "ci_run_id": str(run.id),
-            "run_name": run.name,
-            "head_sha": run.head_sha,
-            "conclusion": run.conclusion,
-            "flakiness_prob": round(ar.get("flakiness_prob", 0.0), 3),
-            "total_errors": ar.get("total_errors", 0),
-            "failure_signatures": [
-                {"template": c.get("template", ""), "count": c.get("count", 0)}
-                for c in ar.get("clusters", [])[:3]
-            ],
-            "created_at": run.created_at,
-        })
-
-    # Sort by flakiness probability descending
-    tests.sort(key=lambda x: x["flakiness_prob"], reverse=True)
-    return tests[:limit]
+    from test_pulse import get_test_pulse
+    pulse = await get_test_pulse(db=db)
+    flaky_workflows = await pulse.analyze_flakiness(repo_id)
+    return flaky_workflows[:limit]
 
 
 @router.get("/{repo_id}/team/bus-factor")

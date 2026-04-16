@@ -93,38 +93,41 @@ class ChronosGraph:
         
         author_files = defaultdict(set)
         
-        async with self.driver.session() as session:
-            for commit in commits:
-                if not commit.author_login:
-                    continue
-                    
-                # Try to get files from commit_files table first
-                cf_result = await self.db.execute(
-                    select(CommitFile.file_path).where(CommitFile.commit_id == commit.id)
-                )
-                files = [f for f in cf_result.scalars().all()]
-                
-                # Skip commits with no file data — do not fabricate paths
-                if not files:
-                    continue
+        # Collect all (author, file, date) triples first, then batch-write with UNWIND
+        batch = []
+        for commit in commits:
+            if not commit.author_login:
+                continue
+            cf_result = await self.db.execute(
+                select(CommitFile.file_path).where(CommitFile.commit_id == commit.id)
+            )
+            files = cf_result.scalars().all()
+            if not files:
+                continue
+            author_files[commit.author_login].update(files)
+            date_str = commit.committed_date.isoformat() if commit.committed_date else None
+            for file in files:
+                batch.append({
+                    "author": commit.author_login,
+                    "file": file,
+                    "date": date_str,
+                })
 
-                author_files[commit.author_login].update(files)
-                
-                # Create relationships in Neo4j for each commit
-                for file in files:
-                    await session.run(
-                        """
-                        MERGE (f:File {path: $file, repo_id: $repo_id})
-                        MERGE (d:Developer {login: $author, repo_id: $repo_id})
-                        MERGE (d)-[r:WORKED_ON]->(f)
-                        SET r.commit_count = COALESCE(r.commit_count, 0) + 1,
-                            r.last_action = $date
-                        """,
-                        file=file,
-                        author=commit.author_login,
-                        repo_id=repo_id,
-                        date=commit.committed_date.isoformat() if commit.committed_date else None
-                    )
+        # Single Cypher round-trip per repo using UNWIND
+        if batch:
+            async with self.driver.session() as session:
+                await session.run(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (f:File {path: row.file, repo_id: $repo_id})
+                    MERGE (d:Developer {login: row.author, repo_id: $repo_id})
+                    MERGE (d)-[r:WORKED_ON]->(f)
+                    SET r.commit_count = COALESCE(r.commit_count, 0) + 1,
+                        r.last_action = row.date
+                    """,
+                    rows=batch,
+                    repo_id=repo_id,
+                )
         
         return {
             "developers": len(author_files),
@@ -157,35 +160,41 @@ class ChronosGraph:
                     "pr_number": pr.number
                 }
         
-        # Create review relationships in Neo4j
+        # Batch-write PR nodes and review relationships with UNWIND
+        pr_batch = [
+            {"pr_id": str(pr_id), "pr_number": data["pr_number"], "author": data["author"]}
+            for pr_id, data in pr_reviewers.items()
+        ]
+        review_batch = [
+            {"pr_id": str(pr_id), "reviewer": reviewer}
+            for pr_id, data in pr_reviewers.items()
+            for reviewer in data["reviewers"]
+        ]
+
         async with self.driver.session() as session:
-            for pr_id, data in pr_reviewers.items():
-                # Create PR node
+            if pr_batch:
                 await session.run(
                     """
-                    MERGE (p:PR {id: $pr_id, repo_id: $repo_id})
-                    SET p.number = $pr_number, p.author = $author
+                    UNWIND $rows AS row
+                    MERGE (p:PR {id: row.pr_id, repo_id: $repo_id})
+                    SET p.number = row.pr_number, p.author = row.author
                     """,
-                    pr_id=str(pr_id),
+                    rows=pr_batch,
                     repo_id=repo_id,
-                    pr_number=data["pr_number"],
-                    author=data["author"]
                 )
-                
-                # Create review relationships
-                for reviewer in data["reviewers"]:
-                    await session.run(
-                        """
-                        MERGE (r:Developer {login: $reviewer, repo_id: $repo_id})
-                        WITH r
-                        MATCH (p:PR {id: $pr_id, repo_id: $repo_id})
-                        MERGE (r)-[rel:REVIEWED]->(p)
-                        SET rel.review_count = COALESCE(rel.review_count, 0) + 1
-                        """,
-                        pr_id=str(pr_id),
-                        reviewer=reviewer,
-                        repo_id=repo_id
-                    )
+            if review_batch:
+                await session.run(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (r:Developer {login: row.reviewer, repo_id: $repo_id})
+                    WITH r, row
+                    MATCH (p:PR {id: row.pr_id, repo_id: $repo_id})
+                    MERGE (r)-[rel:REVIEWED]->(p)
+                    SET rel.review_count = COALESCE(rel.review_count, 0) + 1
+                    """,
+                    rows=review_batch,
+                    repo_id=repo_id,
+                )
         
         return {
             "prs": len(pr_reviewers),

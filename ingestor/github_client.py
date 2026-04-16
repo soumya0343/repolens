@@ -90,6 +90,17 @@ query ($owner: String!, $name: String!, $cursor: String) {
             createdAt
           }
         }
+        files(first: 100) {
+          pageInfo {
+            hasNextPage
+          }
+          nodes {
+            path
+            additions
+            deletions
+            changeType
+          }
+        }
       }
     }
   }
@@ -112,6 +123,19 @@ async def fetch_prs_batch(token: str, owner: str, name: str, cursor: str = None)
         )
         response.raise_for_status()
         return response.json()
+
+
+async def fetch_repo_default_branch(token: str, owner: str, name: str) -> str:
+    """Fetch the current default branch from GitHub. Used to detect drift."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    url = f"{REST_URL}/repos/{owner}/{name}"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=15.0)
+        response.raise_for_status()
+        return response.json()["default_branch"]
 
 
 async def fetch_commit_files(token: str, owner: str, name: str, commit_sha: str, max_retries: int = 3):

@@ -96,12 +96,18 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
                         }
 
                         if func_count == 0 and node_count > 500:
+                            # Include file content so LLMExplainer can give specific suggestions
+                            try:
+                                file_snippet = code.decode('utf-8', errors='replace')[:3000]
+                            except Exception:
+                                file_snippet = ""
                             violations.append({
                                 'file': str(file_path.relative_to(repo_dir)),
                                 'line': 1,
                                 'type': 'god_class',
                                 'severity': 'high',
-                                'msg': f'No functions detected but {node_count} AST nodes — likely a large data/config file'
+                                'msg': f'No functions detected but {node_count} AST nodes — likely a large data/config file',
+                                'file_content': file_snippet,
                             })
                         
                         # Extract imports for cycle detection (python example)

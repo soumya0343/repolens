@@ -177,9 +177,15 @@ Generate a Rego policy JSON with this schema:
             # Do not cache errors
             return None
 
-    async def suggest_refactoring(self, file_content: str, issues: List) -> Dict:
-        """Suggest code refactorings for architectural issues."""
-        key = _cache_key("refactor", json.dumps(issues, sort_keys=True))
+    async def suggest_refactoring(self, issues: List, file_content: str = "") -> Dict:
+        """Suggest code refactorings for architectural issues.
+
+        file_content: actual source code of the affected file. Pass empty string only
+        if the file is genuinely unavailable — without content, suggestions are generic.
+        """
+        # Cache key includes content so different file versions don't collide
+        raw = json.dumps({"issues": issues, "content_hash": hashlib.sha256(file_content.encode()).hexdigest()[:8]}, sort_keys=True)
+        key = _cache_key("refactor", raw)
 
         cached = await self._cache_get(key)
         if cached:
@@ -191,7 +197,13 @@ Generate a Rego policy JSON with this schema:
         if not issues:
             return {"error": "Unable to generate refactoring suggestions: no issues provided."}
 
-        user_prompt = f"""Issues in file:
+        content_section = (
+            f"File content (first 3000 chars):\n```\n{file_content[:3000]}\n```\n\n"
+            if file_content.strip()
+            else "(File content not available — suggestions may be less specific.)\n\n"
+        )
+
+        user_prompt = f"""{content_section}Issues detected:
 {json.dumps(issues[:10], indent=2)}
 
 Return JSON:

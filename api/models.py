@@ -111,15 +111,29 @@ class CIRun(Base):
     github_id = Column(String, unique=True, index=True)
     name = Column(String)
     head_sha = Column(String, index=True)  # The commit it ran on
+    head_branch = Column(String, nullable=True, index=True)  # Branch name the run was triggered on
+    event = Column(String, nullable=True, index=True)  # push, pull_request, schedule, workflow_dispatch, etc.
     status = Column(String) # completed, in_progress
     conclusion = Column(String, index=True) # success, failure, neutral, cancelled
     created_at = Column(DateTime(timezone=True))
     updated_at = Column(DateTime(timezone=True))
-    
+
     # Store TestPulse flaky test classifications here
     analysis_results = Column(JSON, nullable=True)
     
     
+class PRFile(Base):
+    """Tracks files changed in each PR — enables ChronosGraph STMC review coupling"""
+    __tablename__ = "pr_files"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pr_id = Column(UUID(as_uuid=True), ForeignKey("pull_requests.id", ondelete="CASCADE"), index=True)
+    path = Column(String, index=True)
+    additions = Column(Integer, default=0)
+    deletions = Column(Integer, default=0)
+    change_type = Column(String)  # ADDED, MODIFIED, DELETED, RENAMED
+
+
 class CommitFile(Base):
     """Tracks files changed in each commit for fine-grained analysis"""
     __tablename__ = "commit_files"
