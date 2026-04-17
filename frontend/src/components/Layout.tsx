@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { API_BASE_URL } from '../lib/apiConfig';
 
 export type NavId =
   | 'home' | 'repositories' | 'overview' | 'files' | 'prs'
@@ -27,6 +28,18 @@ const NAV_ITEMS: { id: NavId; label: string; icon: string }[] = [
 
 const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
   const navigate = useNavigate();
+  const [repoName, setRepoName] = useState<{ owner: string; name: string } | null>(null);
+
+  useEffect(() => {
+    if (!repoId) { setRepoName(null); return; }
+    const token = localStorage.getItem('token');
+    fetch(`${API_BASE_URL}/repos/${repoId}`, {
+      headers: { Authorization: `Bearer ${token ?? ''}` },
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d ? setRepoName({ owner: d.owner, name: d.name }) : null)
+      .catch(() => null);
+  }, [repoId]);
 
   const handleNav = (id: NavId) => {
     if (id === 'home') { navigate('/home'); return; }
@@ -46,7 +59,8 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
   return (
     <div style={{
       display: 'flex',
-      minHeight: '100vh',
+      height: '100vh',
+      overflow: 'hidden',
       background: 'var(--bg)',
       fontFamily: 'var(--sans)',
     }}>
@@ -59,10 +73,9 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
         display: 'flex',
         flexDirection: 'column',
         padding: '1.5rem 0',
-        position: 'sticky',
-        top: 0,
         height: '100vh',
         overflowY: 'auto',
+        flexShrink: 0,
       }}>
         {/* Logo */}
         <div style={{ padding: '0 1.25rem', marginBottom: '1.5rem' }}>
@@ -129,6 +142,33 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
             [+] NEW_SCAN
           </button>
         </div>
+
+        {/* Active repo chip */}
+        {repoName && (
+          <div style={{ padding: '0 1rem', marginBottom: '1rem' }}>
+            <div
+              onClick={() => repoId && navigate(`/repo/${repoId}/overview`)}
+              style={{
+                background: 'var(--accent-bg)',
+                border: '1px solid var(--accent-border)',
+                borderRadius: 4,
+                padding: '8px 10px',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', flexShrink: 0 }} />
+                <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.06em' }}>ACTIVE REPO</span>
+              </div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-muted)', paddingLeft: 12, lineHeight: 1.4 }}>
+                {repoName.owner}
+              </div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, color: 'var(--accent)', paddingLeft: 12, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {repoName.name}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Nav items */}
         <nav style={{ flex: 1 }}>
@@ -208,7 +248,7 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
       </aside>
 
       {/* ── Page content ──────────────────────────── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', height: '100vh' }}>
         {children}
       </div>
     </div>

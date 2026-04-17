@@ -9,6 +9,7 @@ import Coupling from "./pages/Coupling";
 import CITests from "./pages/CITests";
 import AIAssistant from "./pages/AIAssistant";
 import Team from "./pages/Team";
+import Settings from "./pages/Settings";
 import Dashboard from "./pages/Dashboard";
 import AuthCallback from "./pages/AuthCallback";
 import "./App.css";
@@ -29,6 +30,7 @@ function App() {
         <Route path="/repo/:repoId/ci" element={<CITests />} />
         <Route path="/repo/:repoId/ai" element={<AIAssistant />} />
         <Route path="/repo/:repoId/team" element={<Team />} />
+        <Route path="/repo/:repoId/settings" element={<Settings />} />
         <Route path="/dashboard" element={<Dashboard />} />
       </Routes>
     </BrowserRouter>

@@ -12,7 +12,7 @@ from database import AsyncSessionLocal
 from models import Repo
 from sqlalchemy.future import select
 from db_writer import bulk_insert_commits, bulk_insert_commit_files, bulk_insert_prs, bulk_insert_pr_files
-from models import Commit
+from models import Commit, CommitFile, PullRequest
 from sqlalchemy import update
 
 async def run_backfill_job(ctx, repo_id: str, github_token: str):
@@ -143,6 +143,44 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                 else:
                     print("No new commits to insert")
 
+                # Retry file fetch for existing commits that have no files yet
+                missing_files_result = await db.execute(
+                    select(Commit.id, Commit.oid)
+                    .where(
+                        Commit.repo_id == repo.id,
+                        Commit.is_merge_commit == False,
+                        ~Commit.id.in_(
+                            select(CommitFile.commit_id).where(CommitFile.commit_id == Commit.id).correlate(Commit).scalar_subquery()
+                        )
+                    )
+                    .limit(50)
+                )
+                missing_commits = missing_files_result.all()
+                if missing_commits:
+                    print(f"Retrying file fetch for {len(missing_commits)} commits missing files...")
+                    retry_files = []
+                    for commit_id, commit_oid in missing_commits:
+                        try:
+                            files = await fetch_commit_files(github_token, owner, name, commit_oid)
+                            for f in files:
+                                retry_files.append({
+                                    'id': str(uuid.uuid4()),
+                                    'commit_id': str(commit_id),
+                                    'file_path': f['path'],
+                                    'additions': f.get('additions', 0),
+                                    'deletions': f.get('deletions', 0),
+                                    'change_type': f.get('change_type', 'MODIFIED'),
+                                })
+                            await asyncio.sleep(0.15)
+                        except Exception as e:
+                            print(f"[WARN] Retry failed for {commit_oid}: {e}")
+                    if retry_files:
+                        try:
+                            await bulk_insert_commit_files(db, retry_files)
+                            print(f"  Retry inserted {len(retry_files)} commit files")
+                        except Exception as e:
+                            print(f"  Retry insert error: {e}")
+
                 # Broadcast progress
                 async with httpx.AsyncClient() as client:
                     await client.post("http://api:8000/internal/progress", json={
@@ -171,6 +209,13 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
         pr_cursor = None
         pr_has_next = True
         total_prs = 0
+
+        # Pre-load existing github_ids to dedup on re-backfill
+        existing_pr_ids_result = await db.execute(
+            select(PullRequest.github_id).where(PullRequest.repo_id == repo.id)
+        )
+        existing_pr_github_ids = set(existing_pr_ids_result.scalars().all())
+
         while pr_has_next:
             try:
                 pr_data = await fetch_prs_batch(github_token, owner, name, pr_cursor)
@@ -214,8 +259,15 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                             "change_type": (f.get("changeType") or "MODIFIED").upper(),
                         })
 
+                # keep only new PRs and their associated files
+                new_pr_ids = {p["id"] for p in prs_to_insert if p["github_id"] not in existing_pr_github_ids}
+                prs_to_insert = [p for p in prs_to_insert if p["id"] in new_pr_ids]
+                pr_files_to_insert = [f for f in pr_files_to_insert if f["pr_id"] in new_pr_ids]
+
                 if prs_to_insert:
                     await bulk_insert_prs(db, prs_to_insert)
+                    for p in prs_to_insert:
+                        existing_pr_github_ids.add(p["github_id"])
                     total_prs += len(prs_to_insert)
                     print(f"  Inserted {len(prs_to_insert)} PRs (total {total_prs})")
 

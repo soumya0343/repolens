@@ -9,6 +9,8 @@ This module implements:
 """
 
 import asyncio
+import json
+import os
 from typing import List, Dict, Set, Tuple
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta
@@ -19,7 +21,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import and_, func, desc
 
+import redis.asyncio as aioredis
+
 from models import Commit, CommitFile, Repo
+
+_CACHE_TTL = 3600  # 1 hour
+
+
+def _redis_client() -> aioredis.Redis:
+    host = os.getenv("REDIS_HOST", "localhost")
+    port = int(os.getenv("REDIS_PORT", 6379))
+    return aioredis.from_url(f"redis://{host}:{port}", decode_responses=True)
 
 
 class ChurnBusFactorAnalyzer:
@@ -43,7 +55,26 @@ class ChurnBusFactorAnalyzer:
         Main analysis function for a repository.
 
         Returns comprehensive churn and bus factor analysis.
+        Result cached in Redis for 1 hour keyed by (repo_id, latest_commit_oid).
         """
+        latest_oid_row = await self.db.execute(
+            select(Commit.oid)
+            .where(Commit.repo_id == repo_id)
+            .order_by(Commit.committed_date.desc())
+            .limit(1)
+        )
+        latest_oid = latest_oid_row.scalar() or "none"
+        cache_key = f"churn:{repo_id}:{latest_oid}"
+
+        try:
+            r = _redis_client()
+            cached = await r.get(cache_key)
+            await r.aclose()
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
+
         # Get contributor statistics
         contributor_stats = await self._get_contributor_stats(repo_id)
 
@@ -59,13 +90,22 @@ class ChurnBusFactorAnalyzer:
         # Calculate risk scores
         risk_assessment = self._calculate_risk_scores(bus_factor_metrics, file_ownership)
 
-        return {
+        result = {
             "overall_bus_factor": bus_factor_metrics["overall_hhi"],
             "risk_level": risk_assessment["overall_risk"],
             "contributors": bus_factor_metrics["contributors"],
             "file_ownership": file_ownership,
             "recommendations": risk_assessment["recommendations"]
         }
+
+        try:
+            r = _redis_client()
+            await r.setex(cache_key, _CACHE_TTL, json.dumps(result))
+            await r.aclose()
+        except Exception:
+            pass
+
+        return result
 
     # File path patterns to exclude from lines-changed HHI — lockfiles and generated code
     # skew ownership toward whoever last ran package install or codegen.

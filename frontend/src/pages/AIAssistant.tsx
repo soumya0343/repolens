@@ -26,6 +26,7 @@ interface Message {
 
 interface AIResponse {
   response: string;
+  history?: Record<string, unknown>[];
   findings?: Finding[];
   code_ref?: CodeRef;
 }
@@ -154,6 +155,8 @@ function UserBubble({ msg }: { msg: Message }) {
 export default function AIAssistant() {
   const { repoId } = useParams<{ repoId: string }>();
   const [messages, setMessages] = useState<Message[]>([]);
+  // history in Groq wire format (includes tool messages — not rendered)
+  const [history, setHistory] = useState<Record<string, unknown>[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -171,13 +174,14 @@ export default function AIAssistant() {
     setMessages(prev => [...prev, userMsg]);
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/repos/${repoId}/ai/chat`, {
+      const res = await fetch(`${API_BASE_URL}/repos/${repoId}/chat`, {
         method: "POST",
         headers: { ...authHdr(), "Content-Type": "application/json" },
-        body: JSON.stringify({ message: query }),
+        body: JSON.stringify({ message: query, history }),
       });
       if (res.ok) {
         const data: AIResponse = await res.json();
+        setHistory(data.history ?? []);
         setMessages(prev => [...prev, {
           role: "assistant",
           content: data.response,
@@ -185,7 +189,8 @@ export default function AIAssistant() {
           code_ref: data.code_ref,
         }]);
       } else {
-        setMessages(prev => [...prev, { role: "assistant", content: "Request failed. Check connection or try again." }]);
+        const err = await res.json().catch(() => ({}));
+        setMessages(prev => [...prev, { role: "assistant", content: `Error ${res.status}: ${err.detail ?? "request failed"}` }]);
       }
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Network error. Please try again." }]);
