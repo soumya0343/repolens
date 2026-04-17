@@ -18,7 +18,7 @@ const AuthCallback: React.FC = () => {
           if (response.data.status === 'success') {
             // Store JWT in local storage here
             localStorage.setItem('token', response.data.token);
-            navigate('/setup');
+            navigate('/home');
           } else {
             setError(
               response.data.detail ||

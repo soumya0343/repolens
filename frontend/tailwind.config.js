@@ -8,21 +8,26 @@ export default {
   theme: {
     extend: {
       colors: {
-        forest: {
-          bg:      '#0b0f0d',
-          surface: '#111714',
-          raised:  '#192219',
-          border:  '#263327',
+        terminal: {
+          bg:      '#0d0d0d',
+          surface: '#141414',
+          raised:  '#1c1c1c',
+          border:  '#2a2a2a',
+        },
+        neon: {
+          DEFAULT: '#00ff41',
+          dim:     '#00cc33',
+          border:  'rgba(0,255,65,0.25)',
+          bg:      'rgba(0,255,65,0.06)',
         },
         ink: {
-          DEFAULT: '#dce8e2',
-          muted:   '#7a9188',
-          heading: '#e8f5ef',
+          DEFAULT: '#c8c8c8',
+          muted:   '#555555',
+          heading: '#ffffff',
         },
       },
       fontFamily: {
-        syne:      ['Syne', 'system-ui', 'sans-serif'],
-        'ibm-plex': ['IBM Plex Sans', 'system-ui', 'sans-serif'],
+        grotesk:   ['Space Grotesk', 'system-ui', 'sans-serif'],
         'ibm-mono': ['IBM Plex Mono', 'Courier New', 'monospace'],
       },
     },
