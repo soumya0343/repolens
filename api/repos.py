@@ -10,7 +10,7 @@ import datetime
 from collections import defaultdict
 
 from database import get_db
-from models import User, Repo, UserRepo, Commit, PullRequest, PRComment, ArchAnalysis, CommitFile, CIRun, RepoScoreSnapshot
+from models import User, Repo, UserRepo, Commit, PullRequest, PRComment, ArchAnalysis, CommitFile, CIRun, RepoScoreSnapshot, SecretFinding
 from worker_pool import get_redis_pool, BACKFILL_QUEUE, CI_QUEUE, ARCH_QUEUE
 from cochange_oracle import get_cochange_oracle
 from churn_analyzer import get_churn_analyzer
@@ -22,6 +22,7 @@ from llm_explainer import get_llm_explainer
 router = APIRouter(prefix="/repos", tags=["repos"])
 JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key")
 DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
+SECRET_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 async def get_current_user(authorization: str = Header(None), db: AsyncSession = Depends(get_db)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -193,6 +194,7 @@ async def get_repo_details(repo_id: str, user: User = Depends(get_current_user),
         "github_id": repo.github_id,
         "default_branch": repo.default_branch,
         "synced_at": repo.synced_at,
+        "config": repo.config or {},
         "stats": {
             "commits": commit_count.scalar(),
             "pull_requests": pr_count.scalar()
@@ -219,6 +221,78 @@ async def update_repo_config(
     repo.config = config
     await db.commit()
     return {"status": "updated", "config": repo.config}
+
+
+def _serialize_secret_finding(finding: SecretFinding) -> dict:
+    return {
+        "id": str(finding.id),
+        "source": finding.source,
+        "pr_number": finding.pr_number,
+        "commit_sha": finding.commit_sha,
+        "file_path": finding.file_path,
+        "line_number": finding.line_number,
+        "detector": finding.detector,
+        "severity": finding.severity,
+        "confidence": finding.confidence,
+        "masked_value": finding.masked_value,
+        "fingerprint_hash": finding.fingerprint_hash,
+        "status": finding.status,
+        "message": finding.message,
+        "first_seen_at": finding.first_seen_at,
+        "last_seen_at": finding.last_seen_at,
+        "resolved_at": finding.resolved_at,
+    }
+
+
+@router.get("/{repo_id}/secrets")
+async def get_repo_secrets(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """List masked secret findings for a repository."""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    findings_result = await db.execute(
+        select(SecretFinding)
+        .where(SecretFinding.repo_id == repo_id)
+        .order_by(SecretFinding.status.asc(), SecretFinding.last_seen_at.desc())
+    )
+    findings = findings_result.scalars().all()
+    return [_serialize_secret_finding(f) for f in findings]
+
+
+@router.patch("/{repo_id}/secrets/{finding_id}")
+async def update_secret_finding(
+    repo_id: str,
+    finding_id: str,
+    payload: dict,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update secret finding status without exposing raw secret values."""
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
+    status = payload.get("status")
+    allowed = {"active", "resolved", "false_positive", "accepted_risk"}
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Use one of: {', '.join(sorted(allowed))}")
+
+    finding = await db.get(SecretFinding, finding_id)
+    if not finding or str(finding.repo_id) != repo_id:
+        raise HTTPException(status_code=404, detail="Secret finding not found")
+
+    finding.status = status
+    finding.resolved_at = datetime.datetime.now(datetime.timezone.utc) if status == "resolved" else None
+    await db.commit()
+    await db.refresh(finding)
+    return _serialize_secret_finding(finding)
 
 
 @router.get("/{repo_id}/files")
@@ -291,6 +365,20 @@ async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), d
     except Exception:
         pass
 
+    # Load active secret findings once → dict keyed by file path
+    secrets_by_file: dict = defaultdict(list)
+    try:
+        secret_result = await db.execute(
+            select(SecretFinding).where(
+                SecretFinding.repo_id == repo_id,
+                SecretFinding.status == "active",
+            )
+        )
+        for finding in secret_result.scalars().all():
+            secrets_by_file[finding.file_path].append(finding)
+    except Exception:
+        pass
+
     files = []
     for row in file_rows:
         file_path = row[0]
@@ -303,9 +391,18 @@ async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), d
         hhi_score = hhi_by_file.get(file_path, 0.0) * 35
         violation_count = len(violations_by_file.get(file_path, []))
         violation_score = min(violation_count * 10, 30)
+        file_secrets = secrets_by_file.get(file_path, [])
+        secret_count = len(file_secrets)
+        highest_secret_severity = None
+        if file_secrets:
+            highest_secret_severity = max(
+                (f.severity for f in file_secrets),
+                key=lambda s: SECRET_SEVERITY_RANK.get(s, 0),
+            )
         # Coupling adds up to 10 bonus points on top
         coupling_bonus = coupling_by_file.get(file_path, 0.0) * 10
-        risk = min(round(churn_score + hhi_score + violation_score + coupling_bonus), 100)
+        secret_bonus = min(secret_count * 25, 50)
+        risk = min(round(churn_score + hhi_score + violation_score + coupling_bonus + secret_bonus), 100)
 
         files.append({
             "path": file_path,
@@ -316,6 +413,8 @@ async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), d
             "additions": additions,
             "deletions": deletions,
             "violations": violations_by_file.get(file_path, []),
+            "secret_count": secret_count,
+            "highest_secret_severity": highest_secret_severity,
         })
 
     return files[:50]
@@ -436,6 +535,7 @@ async def get_repo_risk(
 
     scorer = await get_unified_risk_scorer(db)
     risk = await scorer.calculate_repo_risk(repo_id, weights)
+    risk["config"] = config
     background_tasks.add_task(_save_score_snapshot, repo_id, risk)
     return risk
 

@@ -41,6 +41,76 @@ LANGUAGES = {
 from git_client import clone_repository, cleanup_repository
 from import_visitor import import_visitor
 
+SECRET_SCAN_SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', 'dist', 'build', 'coverage', '__pycache__'}
+SECRET_SCAN_SKIP_SUFFIXES = {
+    '.lock', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf', '.zip',
+    '.gz', '.tar', '.pyc', '.woff', '.woff2', 'package-lock.json',
+    'pnpm-lock.yaml', 'poetry.lock', 'cargo.lock'
+}
+SECRET_SCAN_MAX_FILE_BYTES = 512 * 1024
+SECRET_SCAN_BATCH_SIZE = 40
+
+
+def _is_text_bytes(data: bytes) -> bool:
+    if b'\x00' in data[:2048]:
+        return False
+    try:
+        data[:4096].decode('utf-8')
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def _should_secret_scan(path: Path, repo_dir: str) -> bool:
+    rel = path.relative_to(repo_dir)
+    parts = set(rel.parts)
+    if parts & SECRET_SCAN_SKIP_DIRS:
+        return False
+    lower_name = path.name.lower()
+    return not any(lower_name.endswith(suffix) for suffix in SECRET_SCAN_SKIP_SUFFIXES)
+
+
+async def _send_secret_scan_batch(client: httpx.AsyncClient, repo_id: str, files: list):
+    if not files:
+        return
+    try:
+        resp = await client.post(
+            "http://api:8000/internal/security/baseline_scan",
+            json={"repo_id": repo_id, "files": files},
+            headers={"X-Internal-Key": INTERNAL_API_KEY},
+            timeout=30.0,
+        )
+        print(f"Secret scan batch response: {resp.status_code}")
+    except Exception as e:
+        print(f"Secret scan batch failed: {e}")
+
+
+async def _run_baseline_secret_scan(repo_id: str, repo_dir: str):
+    print("Phase 2a: Running SecretSentinel baseline scan...")
+    batch = []
+    async with httpx.AsyncClient() as client:
+        for root, dirs, files in os.walk(repo_dir):
+            dirs[:] = [d for d in dirs if d not in SECRET_SCAN_SKIP_DIRS]
+            root_path = Path(root)
+            for file in files:
+                file_path = root_path / file
+                if not _should_secret_scan(file_path, repo_dir):
+                    continue
+                try:
+                    data = file_path.read_bytes()
+                    if len(data) > SECRET_SCAN_MAX_FILE_BYTES or not _is_text_bytes(data):
+                        continue
+                    batch.append({
+                        "path": str(file_path.relative_to(repo_dir)),
+                        "content": data.decode('utf-8', errors='replace'),
+                    })
+                    if len(batch) >= SECRET_SCAN_BATCH_SIZE:
+                        await _send_secret_scan_batch(client, repo_id, batch)
+                        batch = []
+                except Exception as e:
+                    print(f"Secret scan skipped {file_path}: {e}")
+        await _send_secret_scan_batch(client, repo_id, batch)
+
 def _detect_layer_violations(import_graph, layer_map: dict, repo_dir: str) -> list:
     """Flag imports that cross forbidden layer boundaries.
 
@@ -98,6 +168,13 @@ async def run_arch_snapshot(ctx, repo_id: str, owner: str, name: str, github_tok
         
         # 2. Extract AST and evaluate rules
         print(f"Phase 2: Running Tree-sitter parsing on {repo_dir}...")
+
+        # SecretSentinel runs independently from architecture parsing. Failure
+        # should not prevent other analysis from completing.
+        try:
+            await _run_baseline_secret_scan(repo_id, repo_dir)
+        except Exception as e:
+            print(f"SecretSentinel baseline scan failed: {e}")
         
         violations = []
         import_graph = nx.DiGraph()

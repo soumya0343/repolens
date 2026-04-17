@@ -96,6 +96,32 @@ async function getRisk(repoId) {
   }
 }
 
+async function sendPRSecretScan(repoId, prNumber, headSha, files) {
+  const patchFiles = files
+    .filter(f => f.patch)
+    .map(f => ({ path: f.filename, patch: f.patch }));
+
+  if (!patchFiles.length) {
+    return null;
+  }
+
+  try {
+    const res = await axios.post(`${REPOLENS_API}/internal/security/pr_scan`, {
+      repo_id: repoId,
+      pr_number: prNumber,
+      commit_sha: headSha,
+      files: patchFiles,
+    }, {
+      headers: { 'X-Internal-Key': API_KEY },
+      timeout: 30_000,
+    });
+    return res.data;
+  } catch (e) {
+    console.error('[bot] PR secret scan failed:', e.message);
+    return null;
+  }
+}
+
 // ── Comment formatting ──────────────────────────────────────────────────────
 function riskEmoji(score) {
   if (score >= 75) return '🔴';
@@ -109,7 +135,17 @@ function ratingBadge(rating) {
   return map[rating] || rating;
 }
 
-function formatComment(risk, explanation, owner, repoName, prNumber) {
+function formatSecretSection(secrets) {
+  const findings = secrets?.findings ?? [];
+  if (!findings.length) return '_No active leaked secrets detected._';
+  return findings.slice(0, 10).map(f => {
+    const path = f.file_path || f.file || 'unknown';
+    const line = f.line_number || 1;
+    return `- **${(f.severity || 'medium').toUpperCase()}** \`${path}:${line}\` ${f.detector}: \`${f.masked_value}\` — ${f.message || 'Rotate this credential and remove it from git history.'}`;
+  }).join('\n');
+}
+
+function formatComment(risk, explanation, owner, repoName, prNumber, secrets) {
   const score   = risk.score ?? 0;
   const bd      = risk.breakdown ?? {};
   const label   = (risk.label ?? 'unknown').toUpperCase();
@@ -133,6 +169,9 @@ ${breakdownRows}
 
 ### Recommended Actions
 ${actionLines}
+
+### Secret Findings
+${formatSecretSection(secrets)}
 
 ---
 <details>
@@ -196,16 +235,26 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   // Fetch risk from RepoLens
   const repolensRepo = await getRepoLensRepo(owner, repoName);
-  let risk, explanation;
+  let risk, explanation, secrets;
 
   let violations = [];
   let botConfig  = { block_threshold: DEFAULT_CRITICAL_THRESHOLD, warn_only: false };
+  let prFiles = [];
 
   if (repolensRepo) {
+    try {
+      const filesRes = await octokit.pulls.listFiles({ owner, repo: repoName, pull_number: prNumber });
+      prFiles = filesRes.data;
+      await sendPRSecretScan(repolensRepo.id, prNumber, headSha, prFiles);
+    } catch (e) {
+      console.warn('[bot] Could not fetch or scan PR files:', e.message);
+    }
+
     const analysis = await getRisk(repolensRepo.id);
     risk        = analysis?.risk        ?? { score: 0, label: 'unknown', breakdown: {} };
     explanation = analysis?.explanation ?? null;
     violations  = analysis?.violations  ?? [];
+    secrets     = analysis?.secrets     ?? { counts: {}, findings: [] };
     if (analysis?.config) {
       botConfig.block_threshold = analysis.config.block_threshold ?? DEFAULT_CRITICAL_THRESHOLD;
       botConfig.warn_only       = analysis.config.warn_only       ?? false;
@@ -214,9 +263,10 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
     console.warn(`[bot] ${owner}/${repoName} not connected to RepoLens`);
     risk        = { score: 0, label: 'unknown', breakdown: {} };
     explanation = { summary: 'This repository is not yet connected to RepoLens.' };
+    secrets     = { counts: {}, findings: [] };
   }
 
-  const commentBody = formatComment(risk, explanation, owner, repoName, prNumber);
+  const commentBody = formatComment(risk, explanation, owner, repoName, prNumber, secrets);
 
   // Post PR body comment
   try {
@@ -229,9 +279,11 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   // Post inline diff annotations for architectural violations
   if (violations.length > 0) {
     try {
-      // Get the files changed in this PR
-      const filesRes = await octokit.pulls.listFiles({ owner, repo: repoName, pull_number: prNumber });
-      const changedFiles = new Set(filesRes.data.map(f => f.filename));
+      if (!prFiles.length) {
+        const filesRes = await octokit.pulls.listFiles({ owner, repo: repoName, pull_number: prNumber });
+        prFiles = filesRes.data;
+      }
+      const changedFiles = new Set(prFiles.map(f => f.filename));
 
       const reviewComments = violations
         .filter(v => {

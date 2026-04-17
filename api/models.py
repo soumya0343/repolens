@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Boolean, UniqueConstraint
+from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Boolean, UniqueConstraint, Float
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -167,3 +167,30 @@ class RepoScoreSnapshot(Base):
     label = Column(String(32))
     breakdown = Column(JSON)
     recorded_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SecretFinding(Base):
+    """Stores masked leaked-secret findings without persisting raw secret values."""
+    __tablename__ = 'secret_findings'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repo_id = Column(UUID(as_uuid=True), ForeignKey('repos.id', ondelete='CASCADE'), index=True, nullable=False)
+    source = Column(String(32), nullable=False)  # baseline | pull_request
+    pr_number = Column(Integer, nullable=True, index=True)
+    commit_sha = Column(String, nullable=True, index=True)
+    file_path = Column(String, nullable=False, index=True)
+    line_number = Column(Integer, nullable=False, default=1)
+    detector = Column(String(64), nullable=False)
+    severity = Column(String(32), nullable=False, default='medium')
+    confidence = Column(Float, nullable=False, default=0.0)
+    masked_value = Column(String(255), nullable=False)
+    fingerprint_hash = Column(String(64), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default='active', index=True)
+    message = Column(String, nullable=True)
+    first_seen_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('repo_id', 'source', 'pr_number', 'fingerprint_hash', name='uq_secret_finding_scope_fingerprint'),
+    )

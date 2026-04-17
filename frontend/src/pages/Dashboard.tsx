@@ -6,7 +6,16 @@ import { API_BASE_URL, WS_BASE_URL } from '../lib/apiConfig';
 // ── Types ─────────────────────────────────────────────────────────────────
 
 interface RepoData { id: string; name: string; owner: string; synced_at: string; stats?: { commits: number; pull_requests: number } }
-interface FileData { path: string; language: string; lines: number; risk_score: number; changes?: number; violations: string[] }
+interface FileData {
+  path: string;
+  language: string;
+  lines: number;
+  risk_score: number;
+  changes?: number;
+  violations: string[];
+  secret_count?: number;
+  highest_secret_severity?: string | null;
+}
 interface PRData { id: string; number: number; title: string; state: string; author_login: string; created_at: string; merged_at?: string; predicted_risk_score?: number; repo_id: string }
 interface RiskData { score: number; label: string; breakdown: Record<string, number>; weights?: Record<string, number> }
 interface DoraData { deployment_frequency: { value: number; rating: string; label: string }; lead_time_for_changes: { value: number; rating: string; label: string }; change_failure_rate: { value: number; rating: string; label: string }; time_to_restore: { value: number | null; rating: string; label: string } }
@@ -316,6 +325,8 @@ const Dashboard: React.FC = () => {
   const [warnOnly,         setWarnOnly]         = useState(false);
   const [llmProvider,      setLlmProvider]      = useState('gemini');
   const [llmApiKey,        setLlmApiKey]        = useState('');
+  const [secretAllowlist,  setSecretAllowlist]  = useState('{\n  "fingerprints": [],\n  "path_globs": [],\n  "detectors": []\n}');
+  const [secretAllowlistError, setSecretAllowlistError] = useState<string | null>(null);
   const [notifSaving,      setNotifSaving]      = useState(false);
 
   const [loading,            setLoading]            = useState(true);
@@ -386,6 +397,7 @@ const Dashboard: React.FC = () => {
         if (cfg.warn_only != null)       setWarnOnly(cfg.warn_only as boolean);
         if (cfg.llm_provider != null)    setLlmProvider(cfg.llm_provider as string);
         if (cfg.arch_policy != null)     setArchPolicy(JSON.stringify(cfg.arch_policy, null, 2));
+        if (cfg.secret_allowlist != null) setSecretAllowlist(JSON.stringify(cfg.secret_allowlist, null, 2));
       }
       if (dora)     setDoraData(dora);
       if (flaky)    setFlakyData(flaky);
@@ -483,6 +495,20 @@ const Dashboard: React.FC = () => {
         body: JSON.stringify({ config: { block_threshold: blockThreshold, warn_only: warnOnly, llm_provider: llmProvider, ...(llmApiKey ? { llm_api_key: llmApiKey } : {}) } }),
       });
     } finally { setNotifSaving(false); }
+  };
+
+  const saveSecretAllowlist = async () => {
+    if (!repoId) return;
+    setSecretAllowlistError(null);
+    try {
+      const parsed = JSON.parse(secretAllowlist);
+      await fetch(`${API_BASE_URL}/repos/${repoId}`, {
+        method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: { secret_allowlist: parsed } }),
+      });
+    } catch {
+      setSecretAllowlistError('Invalid JSON. Use fingerprints, path_globs, and detectors arrays.');
+    }
   };
 
   const sendChat = async () => {
@@ -641,7 +667,7 @@ const Dashboard: React.FC = () => {
             </div>
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
-                <tr>{['File','Language','Changes','Risk'].map(h => (
+                <tr>{['File','Language','Changes','Secrets','Risk'].map(h => (
                   <th key={h} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{h}</th>
                 ))}</tr>
               </thead>
@@ -651,6 +677,17 @@ const Dashboard: React.FC = () => {
                     <td className="px-6 py-4 text-sm font-medium text-gray-900 max-w-xs truncate">{f.path}</td>
                     <td className="px-6 py-4 text-sm text-gray-500 capitalize">{f.language}</td>
                     <td className="px-6 py-4 text-sm text-gray-500">{f.changes ?? '—'}</td>
+                    <td className="px-6 py-4">
+                      {(f.secret_count ?? 0) > 0 ? (
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          f.highest_secret_severity === 'critical' ? 'bg-red-100 text-red-800' : 'bg-orange-100 text-orange-800'
+                        }`}>
+                          {f.secret_count} {f.highest_secret_severity}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 text-xs">—</span>
+                      )}
+                    </td>
                     <td className="px-6 py-4">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${riskBg(f.risk_score)}`}>{f.risk_score}/100</span>
                     </td>
@@ -930,6 +967,20 @@ const Dashboard: React.FC = () => {
               <button onClick={saveNotificationPrefs} disabled={notifSaving}
                       className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50">
                 {notifSaving ? 'Saving…' : 'Save Preferences'}
+              </button>
+            </div>
+
+            {/* Secret Detection Allowlist */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-base font-semibold text-gray-900 mb-1">Secret Detection Allowlist</h2>
+              <p className="text-sm text-gray-500 mb-4">Exclude known-safe fingerprints, path globs, or detector IDs from SecretSentinel scans.</p>
+              <textarea value={secretAllowlist} onChange={e => { setSecretAllowlist(e.target.value); setSecretAllowlistError(null); }}
+                        rows={8}
+                        className="w-full font-mono text-xs bg-gray-900 text-green-400 p-4 rounded-lg border border-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y" />
+              {secretAllowlistError && <p className="text-red-500 text-xs mt-2">{secretAllowlistError}</p>}
+              <button onClick={saveSecretAllowlist}
+                      className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">
+                Save Secret Allowlist
               </button>
             </div>
 

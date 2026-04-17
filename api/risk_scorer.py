@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, and_
 
-from models import Repo, ArchAnalysis, CIRun, CommitFile
+from models import Repo, ArchAnalysis, CIRun, CommitFile, SecretFinding
 from cochange_oracle import get_cochange_oracle
 from churn_analyzer import get_churn_analyzer
 from chronos_graph import get_chronos_graph
@@ -76,6 +76,44 @@ class UnifiedRiskScorer:
         failed_ci = ci_stats.get("failure", 0)
         return failed_ci / total_ci
 
+    async def _secret_risk(self, repo_id: str) -> float:
+        stmt = select(SecretFinding.severity, func.count(SecretFinding.id)).where(
+            SecretFinding.repo_id == repo_id,
+            SecretFinding.status == "active",
+        ).group_by(SecretFinding.severity)
+        result = await self.db.execute(stmt)
+        counts = {row[0]: row[1] for row in result.all()}
+        if counts.get("critical", 0) > 0:
+            return 1.0
+        if counts.get("high", 0) > 0:
+            return 0.85
+        medium_count = counts.get("medium", 0)
+        if medium_count > 0:
+            return min(medium_count * 0.2, 0.6)
+        return 0.0
+
+    def _weights(self, weights: Dict = None) -> Dict:
+        defaults = {
+            "coupling": 0.18,
+            "architecture": 0.16,
+            "bus_factor": 0.16,
+            "collaboration": 0.12,
+            "ci": 0.13,
+            "secrets": 0.25,
+        }
+        if not weights:
+            return defaults
+
+        normalized = {k: float(weights.get(k, defaults[k])) for k in defaults if k in weights}
+        if "secrets" not in normalized:
+            scale = 0.75
+            normalized = {k: float(weights.get(k, defaults[k])) * scale for k in defaults if k != "secrets"}
+            normalized["secrets"] = defaults["secrets"]
+        for key, value in defaults.items():
+            normalized.setdefault(key, value)
+        total = sum(normalized.values()) or 1.0
+        return {key: value / total for key, value in normalized.items()}
+
     async def calculate_repo_risk(self, repo_id: str, weights: Dict = None) -> Dict:
         """
         Calculate unified risk score for a repository.
@@ -83,13 +121,7 @@ class UnifiedRiskScorer:
         Signals that fail or have no data return None and are excluded from the
         weighted average — the score is based only on available signals.
         """
-        w = weights or {
-            "coupling": 0.25,
-            "architecture": 0.20,
-            "bus_factor": 0.20,
-            "collaboration": 0.15,
-            "ci": 0.20,
-        }
+        w = self._weights(weights)
 
         async def safe(coro):
             try:
@@ -97,13 +129,14 @@ class UnifiedRiskScorer:
             except Exception:
                 return None
 
-        signal_keys = ["coupling", "architecture", "bus_factor", "collaboration", "ci"]
+        signal_keys = ["coupling", "architecture", "bus_factor", "collaboration", "ci", "secrets"]
         signal_values = await asyncio.gather(
             safe(self._coupling_risk(repo_id)),
             safe(self._arch_risk(repo_id)),
             safe(self._bus_factor_risk(repo_id)),
             safe(self._collab_risk(repo_id)),
             safe(self._ci_risk(repo_id)),
+            safe(self._secret_risk(repo_id)),
         )
         signals = dict(zip(signal_keys, signal_values))
 
@@ -113,6 +146,11 @@ class UnifiedRiskScorer:
             total_weight = sum(w[k] for k in available)
             unified_score: Optional[float] = sum(available[k] * w[k] for k in available) / total_weight
             unified_score = min(unified_score, 1.0)
+            secret_score = signals.get("secrets") or 0.0
+            if secret_score >= 1.0:
+                unified_score = max(unified_score, 0.85)
+            elif secret_score >= 0.85:
+                unified_score = max(unified_score, 0.70)
         else:
             unified_score = None
 
