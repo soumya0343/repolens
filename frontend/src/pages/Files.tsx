@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
+import { toast } from 'sonner';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -105,13 +106,14 @@ const Files: React.FC = () => {
 
   useEffect(() => {
     if (!localStorage.getItem('token')) { navigate('/'); return; }
-    if (!repoId) { navigate('/home'); return; }
+    if (!repoId) { toast.warning('No repo selected.'); navigate('/home'); return; }
     Promise.all([
       apiFetch<RepoMeta>(`${API_BASE_URL}/repos/${repoId}`),
       apiFetch<FileData[]>(`${API_BASE_URL}/repos/${repoId}/files`),
     ]).then(([m, f]) => {
       if (m) setMeta(m);
       if (f) setFiles(f);
+      else toast.error('Failed to load files.');
     }).finally(() => setLoading(false));
   }, [repoId, navigate]);
 

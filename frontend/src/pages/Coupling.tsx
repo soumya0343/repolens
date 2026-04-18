@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
+import { toast } from 'sonner';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -184,7 +185,13 @@ const Coupling: React.FC = () => {
     apiFetch<{ nodes: CouplingNode[]; links: CouplingLink[] }>(
       `${API_BASE_URL}/repos/${repoId}/coupling`
     ).then(data => {
-      if (data) { setNodes(data.nodes); setLinks(data.links); }
+      if (data) {
+        setNodes(data.nodes);
+        setLinks(data.links);
+        if (!data.nodes.length) toast.info('No coupling data yet — sync more commits to see patterns.');
+      } else {
+        toast.error('Failed to load coupling data.');
+      }
     }).finally(() => setLoading(false));
   }, [repoId, navigate]);
 

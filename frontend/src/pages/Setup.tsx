@@ -3,6 +3,7 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import { API_BASE_URL } from "../lib/apiConfig";
 import Layout from "../components/Layout";
+import { toast } from "sonner";
 
 interface GithubRepo {
   id: number;
@@ -49,7 +50,7 @@ export default function Setup() {
     ]).then(([c, a]) => {
       setConnected(c.data ?? []);
       setAvailable(a.data ?? []);
-    }).catch(console.error)
+    }).catch(() => toast.error("Failed to load repositories. Check your connection."))
       .finally(() => setLoading(false));
   }, [navigate]);
 
@@ -69,9 +70,11 @@ export default function Setup() {
       const connRes = await axios.get(`${API_BASE_URL}/repos/`, { headers: { Authorization: `Bearer ${token}` } });
       setConnected(connRes.data);
       const newId = res.data?.repo_id ?? connRes.data.find((r: ConnectedRepo) => r.owner === repo.owner.login && r.name === repo.name)?.id;
+      toast.success(`${repo.owner.login}/${repo.name} connected — backfill started`);
       if (newId) navigate(`/repo/${newId}`);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail ?? err?.message ?? "Unknown error";
+      toast.error(`Failed to connect repo: ${msg}`);
     } finally {
       setConnecting(null);
     }

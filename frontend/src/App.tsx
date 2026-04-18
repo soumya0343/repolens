@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Toaster } from "sonner";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Setup from "./pages/Setup";
@@ -17,6 +18,7 @@ import "./App.css";
 function App() {
   return (
     <BrowserRouter>
+      <Toaster position="bottom-right" theme="dark" richColors />
       <Routes>
         <Route path="/" element={<Login />} />
         <Route path="/auth/callback" element={<AuthCallback />} />

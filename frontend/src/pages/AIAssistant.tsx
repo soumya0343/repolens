@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { API_BASE_URL } from "../lib/apiConfig";
+import { toast } from "sonner";
 
 const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` });
 
@@ -190,10 +191,13 @@ export default function AIAssistant() {
         }]);
       } else {
         const err = await res.json().catch(() => ({}));
-        setMessages(prev => [...prev, { role: "assistant", content: `Error ${res.status}: ${err.detail ?? "request failed"}` }]);
+        const detail = err.detail ?? "request failed";
+        setMessages(prev => [...prev, { role: "assistant", content: `Error ${res.status}: ${detail}` }]);
+        toast.error(`AI error ${res.status}: ${detail}`);
       }
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Network error. Please try again." }]);
+      toast.error("Network error — AI request failed.");
     }
     setLoading(false);
   }

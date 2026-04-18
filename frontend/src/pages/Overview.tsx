@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
+import { toast } from 'sonner';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -178,8 +179,17 @@ const Overview: React.FC = () => {
     setBackfilling(true); setBackfillMsg(null);
     try {
       const r = await fetch(`${API_BASE_URL}/repos/${repoId}/backfill`, { method: 'POST', headers: authHdr() });
-      setBackfillMsg(r.ok ? 'Backfill queued.' : 'Failed to trigger backfill.');
-    } catch { setBackfillMsg('Error triggering backfill.'); }
+      if (r.ok) {
+        setBackfillMsg('Backfill queued.');
+        toast.success('Backfill queued — data will update shortly.');
+      } else {
+        setBackfillMsg('Failed to trigger backfill.');
+        toast.error('Failed to trigger backfill.');
+      }
+    } catch {
+      setBackfillMsg('Error triggering backfill.');
+      toast.error('Error triggering backfill. Check your connection.');
+    }
     finally { setBackfilling(false); }
   };
 
@@ -193,6 +203,9 @@ const Overview: React.FC = () => {
     if (r.ok) {
       const updated = await r.json();
       setSecrets(prev => prev.map(f => f.id === findingId ? updated : f));
+      toast.success(`Secret marked as ${status}.`);
+    } else {
+      toast.error('Failed to update secret status.');
     }
   };
 

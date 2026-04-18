@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
+import { toast } from 'sonner';
 
 interface ConnectedRepo {
   id: string;
@@ -78,7 +79,7 @@ const Home: React.FC = () => {
     axios
       .get(`${API_BASE_URL}/repos/`, { headers: { Authorization: `Bearer ${token}` } })
       .then(res => setRepos(res.data))
-      .catch(() => {})
+      .catch(() => toast.error("Failed to load repos. Check your connection."))
       .finally(() => setLoading(false));
   }, [navigate]);
 
@@ -236,7 +237,7 @@ const Home: React.FC = () => {
               return (
                 <div
                   key={repo.id}
-                  onClick={() => navigate(`/repo/${repo.id}`)}
+                  onClick={() => { toast.info(`Opening ${repo.owner}/${repo.name}…`); navigate(`/repo/${repo.id}`); }}
                   style={{
                     background: 'var(--surface)',
                     border: '1px solid var(--border)',

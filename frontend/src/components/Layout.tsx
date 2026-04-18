@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { API_BASE_URL } from '../lib/apiConfig';
 
 export type NavId =
@@ -47,6 +48,7 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
     if (repoId) {
       navigate(`/repo/${repoId}/${id}`);
     } else {
+      toast.warning('Select a repository first.');
       navigate('/home');
     }
   };
