@@ -186,3 +186,19 @@ async def fetch_commit_files(token: str, owner: str, name: str, commit_sha: str,
             return files
 
         raise RuntimeError(f"Failed to fetch files for {commit_sha} after {max_retries} attempts (rate limited)")
+
+
+async def fetch_workflow_runs(token: str, owner: str, name: str, per_page: int = 100, page: int = 1):
+    """Fetch GitHub Actions workflow runs via REST API."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    url = f"{REST_URL}/repos/{owner}/{name}/actions/runs"
+    params = {"per_page": per_page, "page": page}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, params=params, timeout=30.0)
+        if response.status_code == 404:
+            return {"workflow_runs": [], "total_count": 0}
+        response.raise_for_status()
+        return response.json()

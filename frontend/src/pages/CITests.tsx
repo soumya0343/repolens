@@ -99,7 +99,7 @@ export default function CITests() {
 
   return (
     <Layout activeNav="ci" repoId={repoId}>
-      <div style={{ padding: "32px 36px", maxWidth: 1100 }}>
+      <div style={{ padding: "32px 36px", maxWidth: 1100, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
 
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 }}>

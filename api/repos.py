@@ -167,13 +167,20 @@ async def trigger_backfill(repo_id: str, user: User = Depends(get_current_user),
 async def list_connected_repos(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List already connected repos for the user"""
     result = await db.execute(
-        select(Repo.id, Repo.name, Repo.owner, Repo.synced_at)
+        select(
+            Repo.id, Repo.name, Repo.owner, Repo.synced_at,
+            select(func.count(Commit.id)).where(Commit.repo_id == Repo.id).correlate(Repo).scalar_subquery().label("commit_count"),
+            select(func.count(PullRequest.id)).where(PullRequest.repo_id == Repo.id).correlate(Repo).scalar_subquery().label("pr_count"),
+        )
         .join(UserRepo, UserRepo.repo_id == Repo.id)
         .where(UserRepo.user_id == user.id)
         .order_by(Repo.created_at.desc())
     )
     return [
-        {"id": str(row.id), "name": row.name, "owner": row.owner, "synced_at": row.synced_at}
+        {
+            "id": str(row.id), "name": row.name, "owner": row.owner, "synced_at": row.synced_at,
+            "stats": {"commits": row.commit_count, "pull_requests": row.pr_count}
+        }
         for row in result.all()
     ]
 
@@ -401,20 +408,99 @@ async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(g
     return files[:limit] if limit else files
 
 def get_language_from_extension(file_path: str) -> str:
-    """Map file extension to language"""
-    ext = file_path.split('.')[-1] if '.' in file_path else ''
+    ext = file_path.split('.')[-1].lower() if '.' in file_path else ''
     lang_map = {
-        'py': 'python',
-        'js': 'javascript',
-        'ts': 'typescript',
-        'jsx': 'javascript',
-        'tsx': 'typescript',
+        # Python
+        'py': 'python', 'pyw': 'python', 'pyi': 'python',
+        # JavaScript / TypeScript
+        'js': 'javascript', 'mjs': 'javascript', 'cjs': 'javascript',
+        'jsx': 'javascript', 'ts': 'typescript', 'tsx': 'typescript', 'mts': 'typescript',
+        # Web
+        'html': 'html', 'htm': 'html', 'css': 'css', 'scss': 'scss',
+        'sass': 'sass', 'less': 'less', 'vue': 'vue', 'svelte': 'svelte',
+        # Go
         'go': 'go',
-        'java': 'java',
-        'rb': 'ruby',
+        # Java / JVM
+        'java': 'java', 'kt': 'kotlin', 'kts': 'kotlin', 'scala': 'scala', 'groovy': 'groovy',
+        # C family
+        'c': 'c', 'h': 'c', 'cpp': 'c++', 'cc': 'c++', 'cxx': 'c++',
+        'hpp': 'c++', 'hxx': 'c++', 'cs': 'c#',
+        # Ruby
+        'rb': 'ruby', 'rake': 'ruby', 'gemspec': 'ruby',
+        # Rust
         'rs': 'rust',
+        # PHP
+        'php': 'php', 'phtml': 'php',
+        # Swift / Objective-C
+        'swift': 'swift', 'm': 'objective-c', 'mm': 'objective-c',
+        # Shell
+        'sh': 'shell', 'bash': 'shell', 'zsh': 'shell', 'fish': 'shell',
+        'ps1': 'powershell', 'psm1': 'powershell',
+        # Data / Config
+        'json': 'json', 'json5': 'json', 'jsonc': 'json',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'toml': 'toml', 'ini': 'ini', 'cfg': 'ini', 'conf': 'ini',
+        'xml': 'xml', 'xsd': 'xml', 'xsl': 'xml',
+        'env': 'dotenv',
+        # Infra / DevOps
+        'tf': 'terraform', 'tfvars': 'terraform',
+        'dockerfile': 'docker',
+        'makefile': 'makefile', 'mk': 'makefile',
+        'gradle': 'gradle',
+        # Database
+        'sql': 'sql', 'psql': 'sql',
+        # Docs / Markup
+        'md': 'markdown', 'mdx': 'markdown', 'rst': 'restructuredtext',
+        'tex': 'latex',
+        # Other languages
+        'r': 'r', 'rmd': 'r',
+        'dart': 'dart',
+        'lua': 'lua',
+        'pl': 'perl', 'pm': 'perl',
+        'ex': 'elixir', 'exs': 'elixir',
+        'erl': 'erlang', 'hrl': 'erlang',
+        'hs': 'haskell', 'lhs': 'haskell',
+        'clj': 'clojure', 'cljs': 'clojure', 'cljc': 'clojure',
+        'elm': 'elm',
+        'ml': 'ocaml', 'mli': 'ocaml',
+        'nim': 'nim',
+        'zig': 'zig',
+        'jl': 'julia',
+        'cr': 'crystal',
+        'proto': 'protobuf',
+        'graphql': 'graphql', 'gql': 'graphql',
+        'ipynb': 'jupyter',
+        # Plain text / docs
+        'txt': 'text', 'text': 'text',
+        'docx': 'word', 'doc': 'word',
+        'xlsx': 'excel', 'xls': 'excel', 'csv': 'csv', 'tsv': 'csv',
+        'pptx': 'powerpoint', 'ppt': 'powerpoint',
+        'pdf': 'pdf',
+        'rtf': 'text',
+        # Images / assets
+        'png': 'image', 'jpg': 'image', 'jpeg': 'image', 'gif': 'image',
+        'svg': 'svg', 'ico': 'image', 'webp': 'image',
+        # Fonts / binary assets
+        'woff': 'font', 'woff2': 'font', 'ttf': 'font', 'otf': 'font',
+        # Archives
+        'zip': 'archive', 'tar': 'archive', 'gz': 'archive', 'tgz': 'archive',
+        # Lock files
+        'lock': 'lockfile',
     }
-    return lang_map.get(ext, 'unknown')
+    # Handle extensionless files by basename
+    basename = file_path.split('/')[-1].lower()
+    name_map = {
+        'dockerfile': 'docker', 'makefile': 'makefile', 'rakefile': 'ruby',
+        'gemfile': 'ruby', 'procfile': 'config', 'jenkinsfile': 'groovy',
+        '.gitignore': 'config', '.gitattributes': 'config', '.editorconfig': 'config',
+        '.eslintrc': 'json', '.prettierrc': 'json', '.babelrc': 'json',
+        '.npmrc': 'config', '.nvmrc': 'config', '.node-version': 'config',
+        '.dockerignore': 'config', '.prettierignore': 'config', '.eslintignore': 'config',
+    }
+    # .env, .env.example, .env.local, .env.production, etc.
+    if basename.startswith('.env') or basename == 'env':
+        return 'dotenv'
+    return lang_map.get(ext) or name_map.get(basename) or 'unknown'
 
 @router.get("/{repo_id}/coupling")
 async def get_repo_coupling(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):

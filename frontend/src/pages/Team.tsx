@@ -209,7 +209,7 @@ export default function Team() {
 
   return (
     <Layout activeNav="team" repoId={repoId}>
-      <div style={{ padding: "32px 36px", maxWidth: 1100 }}>
+      <div style={{ padding: "32px 36px", maxWidth: 1100, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
 
         {/* Header */}
         <div style={{ marginBottom: 28 }}>

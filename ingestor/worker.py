@@ -7,12 +7,12 @@ import uuid
 import httpx
 from datetime import datetime, timezone
 from arq.connections import RedisSettings
-from github_client import fetch_commits_batch, fetch_commit_files, fetch_prs_batch, fetch_repo_default_branch
+from github_client import fetch_commits_batch, fetch_commit_files, fetch_prs_batch, fetch_repo_default_branch, fetch_workflow_runs
 from database import AsyncSessionLocal
 from models import Repo
 from sqlalchemy.future import select
-from db_writer import bulk_insert_commits, bulk_insert_commit_files, bulk_insert_prs, bulk_insert_pr_files
-from models import Commit, CommitFile, PullRequest
+from db_writer import bulk_insert_commits, bulk_insert_commit_files, bulk_insert_prs, bulk_insert_pr_files, bulk_insert_ci_runs
+from models import Commit, CommitFile, PullRequest, CIRun
 from sqlalchemy import update
 
 async def run_backfill_job(ctx, repo_id: str, github_token: str):
@@ -283,6 +283,57 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
                 break
 
         print(f"PR ingestion complete. {total_prs} PRs inserted.")
+
+        # ── CI Runs ingestion ────────────────────────────────────────
+        print("Fetching CI workflow runs...")
+        try:
+            existing_ci_result = await db.execute(
+                select(CIRun.github_id).where(CIRun.repo_id == repo.id)
+            )
+            existing_ci_ids = set(existing_ci_result.scalars().all())
+
+            total_ci = 0
+            ci_page = 1
+            while ci_page <= 10:  # cap at 1000 runs (10 pages × 100)
+                data = await fetch_workflow_runs(github_token, owner, name, per_page=100, page=ci_page)
+                runs = data.get("workflow_runs", [])
+                if not runs:
+                    break
+
+                ci_to_insert = []
+                for run in runs:
+                    gid = str(run["id"])
+                    if gid in existing_ci_ids:
+                        continue
+                    ci_to_insert.append({
+                        "id": str(uuid.uuid4()),
+                        "repo_id": str(repo.id),
+                        "github_id": gid,
+                        "name": run.get("name", "") or "",
+                        "head_sha": run.get("head_sha", "") or "",
+                        "head_branch": run.get("head_branch", "") or "",
+                        "event": run.get("event", "") or "",
+                        "status": run.get("status", "") or "",
+                        "conclusion": run.get("conclusion", "") or "",
+                        "created_at": run.get("created_at", "") or "",
+                        "updated_at": run.get("updated_at", "") or "",
+                    })
+
+                if ci_to_insert:
+                    await bulk_insert_ci_runs(db, ci_to_insert)
+                    for r in ci_to_insert:
+                        existing_ci_ids.add(r["github_id"])
+                    total_ci += len(ci_to_insert)
+                    print(f"  Inserted {len(ci_to_insert)} CI runs (total {total_ci})")
+
+                if len(runs) < 100:
+                    break
+                ci_page += 1
+                await asyncio.sleep(0.2)
+
+            print(f"CI ingestion complete. {total_ci} runs inserted.")
+        except Exception as e:
+            print(f"[WARN] CI run ingestion failed (non-fatal): {e}")
 
         # mark repo as synced so dashboard reflects completion
         repo.synced_at = datetime.now(timezone.utc)

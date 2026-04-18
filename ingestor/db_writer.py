@@ -174,3 +174,44 @@ async def bulk_insert_pr_files(db: AsyncSession, pr_files: list[dict]):
 async def bulk_insert_issues(db: AsyncSession, issues: list[dict]):
     # TBD
     pass
+
+
+async def bulk_insert_ci_runs(db: AsyncSession, ci_runs: list[dict]):
+    """Bulk insert CI runs using PostgreSQL COPY."""
+    if not ci_runs:
+        return
+
+    connection = await db.connection()
+    raw_conn = await connection.get_raw_connection()
+
+    buffer = io.StringIO()
+    for run in ci_runs:
+        row = "\t".join([
+            str(run['id']),
+            str(run['repo_id']),
+            str(run['github_id']),
+            str(run.get('name', '') or ''),
+            str(run.get('head_sha', '') or ''),
+            str(run.get('head_branch', '') or ''),
+            str(run.get('event', '') or ''),
+            str(run.get('status', '') or ''),
+            str(run.get('conclusion', '') or ''),
+            str(run.get('created_at', '') or ''),
+            str(run.get('updated_at', '') or ''),
+        ]) + "\n"
+        buffer.write(row)
+
+    buffer.seek(0)
+    buffer_bytes = io.BytesIO(buffer.getvalue().encode('utf-8'))
+    buffer_bytes.seek(0)
+
+    result = await raw_conn.driver_connection.copy_to_table(
+        'ci_runs',
+        source=buffer_bytes,
+        columns=['id', 'repo_id', 'github_id', 'name', 'head_sha', 'head_branch',
+                 'event', 'status', 'conclusion', 'created_at', 'updated_at'],
+        format='csv',
+        delimiter='\t',
+        null='',
+    )
+    print(f"CI runs bulk insert complete. Result: {result}")
