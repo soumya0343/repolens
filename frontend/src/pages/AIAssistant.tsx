@@ -207,7 +207,7 @@ export default function AIAssistant() {
 
   return (
     <Layout activeNav="ai" repoId={repoId}>
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+      <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", minHeight: 0 }}>
 
         {/* Header */}
         <div style={{ padding: "28px 36px 20px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>

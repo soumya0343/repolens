@@ -2,10 +2,11 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
+import Tooltip from '../components/Tooltip';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
-interface RepoMeta { id: string; name: string; owner: string; synced_at?: string }
+interface RepoMeta { id: string; name: string; owner: string; synced_at?: string; stats?: { commits: number; pull_requests: number } }
 
 interface RiskData {
   score: number;
@@ -208,13 +209,13 @@ const Overview: React.FC = () => {
 
   // Component metrics from breakdown (0–100 scale)
   const breakdown = risk?.breakdown ?? {};
-  const components: { label: string; key: string }[] = [
-    { label: 'COUPLING',   key: 'coupling' },
-    { label: 'ARCH',       key: 'architecture' },
-    { label: 'BUS FACTOR', key: 'bus_factor' },
-    { label: 'COLLAB',     key: 'collaboration' },
-    { label: 'CI SCORE',   key: 'ci' },
-    { label: 'SECRETS',    key: 'secrets' },
+  const components: { label: string; key: string; tip: string }[] = [
+    { label: 'COUPLING',   key: 'coupling',      tip: 'How often files change together. High coupling means a bug in one file likely breaks others.' },
+    { label: 'ARCH',       key: 'architecture',  tip: 'Whether the codebase follows its own structural rules — e.g. no circular imports, no layer violations.' },
+    { label: 'BUS FACTOR', key: 'bus_factor',    tip: 'Knowledge concentration risk. A score of 100 means one person owns everything — if they leave, the team is stuck.' },
+    { label: 'COLLAB',     key: 'collaboration', tip: 'How well knowledge is shared across the team. Low scores mean isolated contributors who rarely overlap.' },
+    { label: 'CI SCORE',   key: 'ci',            tip: 'Reliability of your CI pipeline. Factors in flaky tests, failure rates, and build duration trends.' },
+    { label: 'SECRETS',    key: 'secrets',       tip: 'Presence of leaked credentials, API keys, or tokens in code. Any active finding here is a critical risk.' },
   ];
 
   // File risk distribution
@@ -328,8 +329,9 @@ const Overview: React.FC = () => {
               <Card>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
                   <div>
-                    <div style={{ fontFamily: 'var(--sans)', fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                    <div style={{ fontFamily: 'var(--sans)', fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '0.06em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
                       UNIFIED RISK SCORE
+                      <Tooltip text="A single 0–100 number representing overall repo health. It blends file churn, code ownership concentration, architectural violations, CI stability, secret leaks, and collaboration patterns." position="right" />
                     </div>
                     <div style={{ fontFamily: 'var(--sans)', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>
                       Aggregated system vulnerability metric
@@ -394,12 +396,15 @@ const Overview: React.FC = () => {
                   COMPONENT METRICS
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '0.75rem' }}>
-                  {components.map(({ label, key }) => {
+                  {components.map(({ label, key, tip }) => {
                     const val = breakdown[key] !== undefined ? Math.round(breakdown[key]) : null;
                     const col = val !== null ? riskColor(val) : 'var(--text-muted)';
                     return (
                       <Card key={key} style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                        <SectionLabel>{label}</SectionLabel>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <SectionLabel>{label}</SectionLabel>
+                          <Tooltip text={tip} position="bottom" />
+                        </div>
                         <div style={{ display: 'flex', alignItems: 'baseline', gap: 2 }}>
                           <span style={{ fontFamily: 'var(--heading)', fontSize: '1.5rem', fontWeight: 700, color: val !== null ? col : 'var(--text-muted)', letterSpacing: '-0.02em' }}>
                             {val !== null ? val : '—'}
@@ -687,10 +692,25 @@ const Overview: React.FC = () => {
                 </Card>
               )}
 
-              {/* Files Scanned + Critical Vulns + Secrets */}
+              {/* Commits + Files Scanned + Critical Vulns + Secrets */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                 <Card style={{ padding: '1rem' }}>
-                  <SectionLabel>FILES SCANNED</SectionLabel>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <SectionLabel>TOTAL COMMITS</SectionLabel>
+                    <Tooltip text="Total number of commits ingested and analyzed for this repository." position="top" />
+                  </div>
+                  <div style={{ fontFamily: 'var(--heading)', fontSize: '1.6rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '-0.02em', margin: '0.4rem 0 0.25rem' }}>
+                    {meta?.stats?.commits != null ? meta.stats.commits.toLocaleString() : '—'}
+                  </div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                    // analyzed commits
+                  </div>
+                </Card>
+                <Card style={{ padding: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <SectionLabel>FILES SCANNED</SectionLabel>
+                    <Tooltip text="All files that appear in at least one commit. Sorted by risk — the most dangerous files surface first." position="top" />
+                  </div>
                   <div style={{ fontFamily: 'var(--heading)', fontSize: '1.6rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '-0.02em', margin: '0.4rem 0 0.25rem' }}>
                     {files.length > 0 ? files.length.toLocaleString() : '—'}
                   </div>
@@ -701,7 +721,10 @@ const Overview: React.FC = () => {
                   )}
                 </Card>
                 <Card style={{ padding: '1rem' }}>
-                  <SectionLabel>CRITICAL VULNS</SectionLabel>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <SectionLabel>CRITICAL VULNS</SectionLabel>
+                    <Tooltip text="Files with a risk score ≥ 75, known architectural violations, or active secret leaks. These need immediate attention." position="top" />
+                  </div>
                   <div style={{ fontFamily: 'var(--heading)', fontSize: '1.6rem', fontWeight: 700, color: criticalFiles.length > 0 ? 'var(--accent)' : 'var(--text-h)', letterSpacing: '-0.02em', margin: '0.4rem 0 0.25rem' }}>
                     {String(criticalFiles.length).padStart(2, '0')}
                   </div>
@@ -710,7 +733,10 @@ const Overview: React.FC = () => {
                   </div>
                 </Card>
                 <Card style={{ padding: '1rem' }}>
-                  <SectionLabel>SECRETS FOUND</SectionLabel>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <SectionLabel>SECRETS FOUND</SectionLabel>
+                    <Tooltip text="Hardcoded API keys, passwords, tokens, or credentials detected in source code. Active findings are a security emergency." position="top" />
+                  </div>
                   <div style={{ fontFamily: 'var(--heading)', fontSize: '1.6rem', fontWeight: 700, color: activeSecrets.length > 0 ? 'var(--danger)' : 'var(--text-h)', letterSpacing: '-0.02em', margin: '0.4rem 0 0.25rem' }}>
                     {String(activeSecrets.length).padStart(2, '0')}
                   </div>

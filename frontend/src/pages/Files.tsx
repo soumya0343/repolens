@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
+import Tooltip from '../components/Tooltip';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -219,6 +220,9 @@ const Files: React.FC = () => {
           }}>
             FILE_SYSTEM
           </div>
+          <div style={{ fontFamily: 'var(--sans)', fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.75rem', maxWidth: 560, lineHeight: 1.5 }}>
+            Every file tracked by commit history, ranked by risk. Risk combines how often a file changes, who owns it, known rule violations, and whether secrets were found inside it.
+          </div>
         </div>
 
         {/* Stats + actions row */}
@@ -295,11 +299,11 @@ const Files: React.FC = () => {
           }}>
             {([
               { label: 'FILE_PATH', key: 'path' },
-              { label: 'RISK_SCORE', key: 'risk_score' },
-              { label: 'CHURN_RATE', key: 'changes' },
+              { label: 'RISK_SCORE', key: 'risk_score', tip: 'A 0–100 score combining how often this file changes, how concentrated its ownership is, architectural violations, and any secrets found.' },
+              { label: 'CHURN_RATE', key: 'changes', tip: 'How many times this file has been modified in commits. High churn = frequently changing code, which increases the chance of introducing bugs.' },
               { label: 'LAST_MODIFIED', key: null },
               { label: 'ACTIONS', key: null },
-            ] as { label: string; key: SortKey | null }[]).map(col => (
+            ] as { label: string; key: SortKey | null; tip?: string }[]).map(col => (
               <span
                 key={col.label}
                 onClick={() => col.key && handleSort(col.key)}
@@ -316,6 +320,7 @@ const Files: React.FC = () => {
                 {col.key === sortKey && (
                   <span style={{ fontSize: '0.6rem' }}>{sortDir === 'desc' ? '↓' : '↑'}</span>
                 )}
+                {col.tip && <Tooltip text={col.tip} position="bottom" />}
               </span>
             ))}
           </div>

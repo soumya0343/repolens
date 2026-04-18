@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
+import Tooltip from '../components/Tooltip';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -227,6 +228,9 @@ const Coupling: React.FC = () => {
           <div style={{ fontFamily: 'var(--heading)', fontSize: 'clamp(2.8rem, 6vw, 4.5rem)', fontWeight: 700, color: 'var(--text-h)', textTransform: 'uppercase', letterSpacing: '-0.02em' }}>
             FILE_COUPLING
           </div>
+          <div style={{ fontFamily: 'var(--sans)', fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.75rem', maxWidth: 560, lineHeight: 1.5, lineHeight: 1.5 }}>
+            Files that are frequently changed together in the same commit. When two files are tightly coupled, a bug fix or feature in one almost always requires a change in the other — a hidden dependency worth knowing about.
+          </div>
         </div>
 
         {loading ? (
@@ -239,13 +243,16 @@ const Coupling: React.FC = () => {
             {/* Stats row */}
             <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem' }}>
               {[
-                { label: 'TOTAL FILES',        value: nodes.length },
-                { label: 'COUPLED PAIRS',      value: links.length },
-                { label: 'STRONG COUPLINGS',   value: strongLinks.length, accent: strongLinks.length > 0 },
-                { label: 'FILE CLUSTERS',       value: groups },
+                { label: 'TOTAL FILES',      value: nodes.length,        tip: 'Files that appear in at least one co-change pair. Files changed alone every time are excluded.' },
+                { label: 'COUPLED PAIRS',    value: links.length,        tip: 'Number of file pairs that have been committed together at least 10% of the time.' },
+                { label: 'STRONG COUPLINGS', value: strongLinks.length,  accent: strongLinks.length > 0, tip: 'Pairs with very high coupling (score > 0.7). Changing one almost certainly means you need to change the other.' },
+                { label: 'FILE CLUSTERS',    value: groups,              tip: 'Groups of files that tend to change together. Each cluster is a hidden module — changes in one file may ripple through the whole group.' },
               ].map(s => (
                 <div key={s.label} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 3, padding: '1rem 1.25rem' }}>
-                  <div style={{ fontFamily: 'var(--sans)', fontSize: '0.62rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '0.4rem' }}>{s.label}</div>
+                  <div style={{ fontFamily: 'var(--sans)', fontSize: '0.62rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    {s.label}
+                    {s.tip && <Tooltip text={s.tip} position="bottom" />}
+                  </div>
                   <div style={{ fontFamily: 'var(--heading)', fontSize: '2rem', fontWeight: 700, color: s.accent ? 'var(--warning)' : 'var(--text-h)', letterSpacing: '-0.02em' }}>{s.value}</div>
                 </div>
               ))}

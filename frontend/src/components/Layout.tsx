@@ -73,7 +73,6 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
         display: 'flex',
         flexDirection: 'column',
         padding: '1.5rem 0',
-        height: '100vh',
         overflowY: 'auto',
         flexShrink: 0,
       }}>
@@ -171,7 +170,7 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
         )}
 
         {/* Nav items */}
-        <nav style={{ flex: 1 }}>
+        <nav style={{ flex: 1, overflowY: 'auto' }}>
           {NAV_ITEMS.map(item => {
             const isActive = activeNav === item.id;
             return (
@@ -213,7 +212,7 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
         </nav>
 
         {/* Bottom */}
-        <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+        <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem', flexShrink: 0 }}>
           {[
             { label: 'DOCS', icon: '▤', action: () => {} },
             { label: 'LOGOUT', icon: '↩', action: handleLogout, danger: true },
@@ -248,7 +247,7 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
       </aside>
 
       {/* ── Page content ──────────────────────────── */}
-      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', height: '100vh' }}>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {children}
       </div>
     </div>

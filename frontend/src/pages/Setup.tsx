@@ -171,7 +171,7 @@ export default function Setup() {
       </header>
 
       {/* Main content */}
-      <main style={{ flex: 1, padding: "2.5rem 2.5rem 3rem" }}>
+      <main style={{ flex: 1, padding: "2.5rem 2.5rem 3rem", overflowY: "auto" }}>
 
         {/* Hero */}
         <div style={{ marginBottom: "2.5rem" }}>

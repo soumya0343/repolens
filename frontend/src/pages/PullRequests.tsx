@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
 import Layout from '../components/Layout';
+import Tooltip from '../components/Tooltip';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -187,6 +188,9 @@ const PullRequests: React.FC = () => {
             <div style={{ fontFamily: 'var(--sans)', fontSize: '0.72rem', fontWeight: 500, color: 'var(--text-muted)', letterSpacing: '0.08em', textTransform: 'uppercase', marginTop: '0.5rem' }}>
               SCANNING {loading ? '...' : prs.length} OPEN REQUESTS ACROSS {repoName.toUpperCase()}
             </div>
+            <div style={{ fontFamily: 'var(--sans)', fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.6rem', maxWidth: 540, lineHeight: 1.5, textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
+              Each pull request is scored by AI based on how risky the code change is — touching critical files, high churn areas, or complex logic raises the score.
+            </div>
           </div>
           <div style={{ display: 'flex', gap: '0.6rem', flexShrink: 0, marginTop: '0.25rem' }}>
             <select
@@ -238,7 +242,7 @@ const PullRequests: React.FC = () => {
 
           {/* High Risk */}
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 3, padding: '1.1rem 1.25rem' }}>
-            <div style={{ fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '0.5rem' }}>HIGH RISK</div>
+            <div style={{ fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: 4 }}>HIGH RISK <Tooltip text="PRs with a predicted risk score ≥ 65. These touch sensitive or frequently-broken areas and should be reviewed carefully before merging." position="bottom" /></div>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
               <span style={{ fontFamily: 'var(--heading)', fontSize: '2.2rem', fontWeight: 700, color: highRisk.length > 0 ? 'var(--danger)' : 'var(--text-h)', letterSpacing: '-0.02em' }}>
                 {loading ? '—' : String(highRisk.length).padStart(2, '0')}
@@ -263,7 +267,7 @@ const PullRequests: React.FC = () => {
             background: 'var(--surface)', borderRadius: 3, padding: '1.1rem 1.25rem',
             border: '1px solid var(--accent-border)',
           }}>
-            <div style={{ fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '0.5rem' }}>AI AUTO-MERGE ELIGIBLE</div>
+            <div style={{ fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: 4 }}>AI AUTO-MERGE ELIGIBLE <Tooltip text="PRs with a risk score below 20 — low-risk changes like docs, typos, or small config tweaks that are safe to merge without deep review." position="bottom" /></div>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
               <span style={{ fontFamily: 'var(--heading)', fontSize: '2.2rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '-0.02em' }}>
                 {loading ? '—' : String(autoMerge.length).padStart(2, '0')}

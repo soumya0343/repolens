@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { API_BASE_URL } from "../lib/apiConfig";
+import Tooltip from "../components/Tooltip";
 
 const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` });
 
@@ -126,6 +127,9 @@ export default function CITests() {
             <h1 style={{ fontFamily: "var(--heading)", fontSize: 28, fontWeight: 700, color: "var(--text-h)", margin: 0, letterSpacing: "-0.5px" }}>
               CI Pipeline Execution
             </h1>
+            <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "6px 0 0", lineHeight: 1.5, maxWidth: 520 }}>
+              Live view of your build pipeline — test coverage, duration, and flaky tests that pass sometimes and fail others for no obvious reason.
+            </p>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <button style={{
@@ -173,7 +177,7 @@ export default function CITests() {
             </div>
           </div>
           <div style={{ ...card }}>
-            <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 10, letterSpacing: "0.08em" }}>TEST COVERAGE</div>
+            <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 10, letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 4 }}>TEST COVERAGE <Tooltip text="Percentage of your code that is exercised by automated tests. Higher is better — low coverage means bugs can hide undetected." position="bottom" /></div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
               <span style={{ color: "var(--text-h)", fontFamily: "var(--mono)", fontSize: 22, fontWeight: 700 }}>
                 {loading ? "—" : stats?.test_coverage != null ? `${stats.test_coverage.toFixed(1)}%` : "—"}
@@ -299,14 +303,17 @@ export default function CITests() {
 
         {/* Flaky CI Runs */}
         <div>
-          <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.1em", marginBottom: 14 }}>FLAKY CI RUNS</div>
+          <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.1em", marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>FLAKY CI RUNS <Tooltip text="Tests or jobs that produce inconsistent results — passing on one run, failing on the next with no code change. Flaky tests erode trust in your CI pipeline." position="right" /></div>
           <div style={{ ...card, padding: 0, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
                   {["RUN NAME", "SHA", "CONCLUSION", "FLAKINESS", "ERRORS", "TOP FAILURE"].map(h => (
                     <th key={h} style={{ padding: "10px 16px", textAlign: "left", color: "var(--text-muted)", fontSize: 11, fontWeight: 500, letterSpacing: "0.06em" }}>
-                      {h}
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        {h}
+                        {h === "FLAKINESS" && <Tooltip text="Probability (0–100%) that this CI run is flaky. Calculated from repeated failure patterns on the same code." position="top" />}
+                      </span>
                     </th>
                   ))}
                 </tr>

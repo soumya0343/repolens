@@ -285,7 +285,7 @@ async def update_secret_finding(
 
 
 @router.get("/{repo_id}/files")
-async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get files in a repository with their risk scores"""
     await _require_repo_access(repo_id, user, db)
 
@@ -398,7 +398,7 @@ async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), d
             "highest_secret_severity": highest_secret_severity,
         })
 
-    return files[:50]
+    return files[:limit] if limit else files
 
 def get_language_from_extension(file_path: str) -> str:
     """Map file extension to language"""

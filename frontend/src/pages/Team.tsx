@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { API_BASE_URL } from "../lib/apiConfig";
+import Tooltip from "../components/Tooltip";
 
 const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` });
 async function apiFetch<T>(url: string): Promise<T | null> {
@@ -229,7 +230,7 @@ export default function Team() {
             </div>
           </div>
           <div style={{ ...card }}>
-            <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 10, letterSpacing: "0.08em" }}>BUS FACTOR (HHI)</div>
+            <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 10, letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 4 }}>BUS FACTOR (HHI) <Tooltip text="How concentrated code knowledge is. A score near 1.0 means one person owns most of the codebase — if they leave, the team loses critical context. Lower is healthier." position="bottom" /></div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
               <span style={{ color: bfColor, fontFamily: "var(--mono)", fontSize: 24, fontWeight: 700 }}>{bfScore}</span>
               {busFactor && (
@@ -249,7 +250,7 @@ export default function Team() {
             </div>
           </div>
           <div style={{ ...card }}>
-            <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 10, letterSpacing: "0.08em" }}>COLLAB EDGES</div>
+            <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 10, letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 4 }}>COLLAB EDGES <Tooltip text="Number of file-overlap connections between contributors. A higher number means more shared ownership — knowledge is better distributed across the team." position="bottom" /></div>
             <div style={{ color: "var(--text-h)", fontFamily: "var(--mono)", fontSize: 24, fontWeight: 700 }}>
               {loading ? "—" : edges.length}
             </div>
