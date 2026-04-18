@@ -318,3 +318,24 @@ async def trigger_build_graph(repo_id: str, db: AsyncSession = Depends(get_db)):
     except Exception as e:
         # Graph build failure must not block the backfill response
         return {"status": "error", "detail": str(e)}
+
+
+@router.post('/refresh_risk/{repo_id}', dependencies=[Depends(_verify_internal)])
+async def refresh_risk_score(repo_id: str, db: AsyncSession = Depends(get_db)):
+    """Compute and persist a fresh risk score — called by ingestor after backfill completes."""
+    from risk_scorer import get_unified_risk_scorer
+    from models import RepoScoreSnapshot
+    try:
+        scorer = await get_unified_risk_scorer(db)
+        risk = await scorer.calculate_repo_risk(repo_id)
+        if risk.get("score") is not None:
+            db.add(RepoScoreSnapshot(
+                repo_id=repo_id,
+                score=int(risk["score"]),
+                label=risk.get("label", "unknown"),
+                breakdown=risk.get("breakdown"),
+            ))
+            await db.commit()
+        return {"status": "ok", "score": risk.get("score"), "label": risk.get("label")}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}

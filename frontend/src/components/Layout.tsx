@@ -5,7 +5,7 @@ import { API_BASE_URL } from '../lib/apiConfig';
 
 export type NavId =
   | 'home' | 'repositories' | 'overview' | 'files' | 'prs'
-  | 'coupling' | 'releases' | 'ci' | 'team' | 'settings' | 'ai';
+  | 'coupling' | 'ci' | 'team' | 'settings' | 'ai';
 
 interface LayoutProps {
   activeNav: NavId;
@@ -20,7 +20,6 @@ const NAV_ITEMS: { id: NavId; label: string; icon: string }[] = [
   { id: 'files',        label: 'FILES',        icon: '▦' },
   { id: 'prs',          label: 'PULL REQUESTS',icon: '⟶' },
   { id: 'coupling',     label: 'COUPLING',     icon: '✦' },
-  { id: 'releases',     label: 'RELEASES',     icon: '◎' },
   { id: 'ci',           label: 'CI/TESTS',     icon: '▣' },
   { id: 'team',         label: 'TEAM',         icon: '⚇' },
   { id: 'settings',     label: 'SETTINGS',     icon: '⚙' },

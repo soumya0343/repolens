@@ -350,6 +350,17 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
         except Exception as e:
             print(f"[WARN] ChronosGraph build trigger failed (non-fatal): {e}")
 
+        # Compute and persist risk score now that all data is ingested
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    f"http://api:8000/internal/refresh_risk/{repo_id}",
+                    headers={"X-Internal-Key": os.getenv("REPOLENS_API_KEY", "internal_key")},
+                )
+                print(f"Risk score refreshed: {resp.status_code} {resp.text[:200]}")
+        except Exception as e:
+            print(f"[WARN] Risk score refresh failed (non-fatal): {e}")
+
     print(f"Backfill complete for {owner}/{name}. Processed {total_commits} commits.")
     return total_commits
 

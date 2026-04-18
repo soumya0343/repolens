@@ -164,25 +164,47 @@ async def trigger_backfill(repo_id: str, user: User = Depends(get_current_user),
     return {"status": "enqueued", "repo_id": repo_id, "message": "Backfill job requeued"}
 
 @router.get("/")
-async def list_connected_repos(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def list_connected_repos(background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List already connected repos for the user"""
     result = await db.execute(
         select(
             Repo.id, Repo.name, Repo.owner, Repo.synced_at,
             select(func.count(Commit.id)).where(Commit.repo_id == Repo.id).correlate(Repo).scalar_subquery().label("commit_count"),
             select(func.count(PullRequest.id)).where(PullRequest.repo_id == Repo.id).correlate(Repo).scalar_subquery().label("pr_count"),
+            select(RepoScoreSnapshot.score).where(RepoScoreSnapshot.repo_id == Repo.id).correlate(Repo).order_by(RepoScoreSnapshot.recorded_at.desc()).limit(1).scalar_subquery().label("risk_score"),
+            select(RepoScoreSnapshot.recorded_at).where(RepoScoreSnapshot.repo_id == Repo.id).correlate(Repo).order_by(RepoScoreSnapshot.recorded_at.desc()).limit(1).scalar_subquery().label("score_recorded_at"),
+            select(func.count(SecretFinding.id)).where(SecretFinding.repo_id == Repo.id, SecretFinding.status == "active").correlate(Repo).scalar_subquery().label("active_secrets"),
         )
         .join(UserRepo, UserRepo.repo_id == Repo.id)
         .where(UserRepo.user_id == user.id)
         .order_by(Repo.created_at.desc())
     )
-    return [
-        {
+    rows = result.all()
+    _score_stale_cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)
+    out = []
+    for row in rows:
+        risk_score = row.risk_score
+        score_recorded_at = row.score_recorded_at
+        _snapshot_stale = (
+            score_recorded_at is None or
+            (score_recorded_at.tzinfo is None and
+             score_recorded_at < _score_stale_cutoff.replace(tzinfo=None)) or
+            (score_recorded_at.tzinfo is not None and
+             score_recorded_at < _score_stale_cutoff)
+        )
+        if risk_score is None:
+            # Derive floor from secrets while background compute runs
+            if (row.active_secrets or 0) > 0:
+                risk_score = min((row.active_secrets or 0) * 25, 100)
+        if _snapshot_stale:
+            # Recompute when no snapshot or snapshot older than 6 hours
+            background_tasks.add_task(_background_risk_compute, str(row.id))
+        out.append({
             "id": str(row.id), "name": row.name, "owner": row.owner, "synced_at": row.synced_at,
+            "risk_score": risk_score,
             "stats": {"commits": row.commit_count, "pull_requests": row.pr_count}
-        }
-        for row in result.all()
-    ]
+        })
+    return out
 
 @router.get("/{repo_id}")
 async def get_repo_details(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
@@ -307,14 +329,10 @@ async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(g
         .join(Commit, Commit.id == CommitFile.commit_id)
         .where(Commit.repo_id == repo_id)
         .group_by(CommitFile.file_path)
-        .order_by(func.count(CommitFile.id).desc())
     )
     file_rows = files_result.all()
 
-    if not file_rows:
-        return []
-
-    max_changes = max(row[1] for row in file_rows) or 1
+    max_changes = max((row[1] for row in file_rows), default=1) or 1
 
     # Load arch violations once → dict keyed by file path
     violations_by_file: dict = defaultdict(list)
@@ -403,8 +421,52 @@ async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(g
             "violations": violations_by_file.get(file_path, []),
             "secret_count": secret_count,
             "highest_secret_severity": highest_secret_severity,
+            "risk_breakdown": {
+                "churn": round(churn_score),
+                "bus_factor": round(hhi_score),
+                "violations": round(violation_score),
+                "coupling": round(coupling_bonus),
+                "secrets": round(secret_bonus),
+            },
         })
 
+    # Add files with active secrets that never appeared in any commit
+    seen_paths = {f["path"] for f in files}
+    for file_path, file_secrets in secrets_by_file.items():
+        if file_path in seen_paths:
+            continue
+        secret_count = len(file_secrets)
+        highest_secret_severity = max(
+            (f.severity for f in file_secrets),
+            key=lambda s: SECRET_SEVERITY_RANK.get(s, 0),
+        )
+        violation_count = len(violations_by_file.get(file_path, []))
+        violation_score = min(violation_count * 10, 30)
+        hhi_score = hhi_by_file.get(file_path, 0.0) * 35
+        coupling_bonus = coupling_by_file.get(file_path, 0.0) * 10
+        secret_bonus = min(secret_count * 25, 50)
+        risk = min(round(hhi_score + violation_score + coupling_bonus + secret_bonus), 100)
+        files.append({
+            "path": file_path,
+            "language": get_language_from_extension(file_path),
+            "lines": 0,
+            "risk_score": risk,
+            "changes": 0,
+            "additions": 0,
+            "deletions": 0,
+            "violations": violations_by_file.get(file_path, []),
+            "secret_count": secret_count,
+            "highest_secret_severity": highest_secret_severity,
+            "risk_breakdown": {
+                "churn": 0,
+                "bus_factor": round(hhi_score),
+                "violations": round(violation_score),
+                "coupling": round(coupling_bonus),
+                "secrets": round(secret_bonus),
+            },
+        })
+
+    files.sort(key=lambda f: f["risk_score"], reverse=True)
     return files[:limit] if limit else files
 
 def get_language_from_extension(file_path: str) -> str:
@@ -542,6 +604,25 @@ async def get_repo_violations(repo_id: str, user: User = Depends(get_current_use
     ]
 
 
+async def _background_risk_compute(repo_id: str):
+    """Compute and persist risk score for a repo that has no snapshot yet."""
+    from database import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as session:
+            scorer = await get_unified_risk_scorer(session)
+            risk = await scorer.calculate_repo_risk(repo_id)
+            if risk.get("score") is not None:
+                session.add(RepoScoreSnapshot(
+                    repo_id=repo_id,
+                    score=int(risk["score"]),
+                    label=risk.get("label", "unknown"),
+                    breakdown=risk.get("breakdown"),
+                ))
+                await session.commit()
+    except Exception:
+        pass
+
+
 async def _save_score_snapshot(repo_id: str, risk: dict):
     """Background task: save a score snapshot if none recorded in the last 6 hours."""
     from database import AsyncSessionLocal
@@ -583,7 +664,20 @@ async def get_repo_risk(
     scorer = await get_unified_risk_scorer(db)
     risk = await scorer.calculate_repo_risk(repo_id, weights)
     risk["config"] = config
-    background_tasks.add_task(_save_score_snapshot, repo_id, risk)
+
+    # Always save a fresh snapshot so the home page list picks up the correct score
+    if risk.get("score") is not None:
+        try:
+            db.add(RepoScoreSnapshot(
+                repo_id=repo_id,
+                score=int(risk["score"]),
+                label=risk.get("label", "unknown"),
+                breakdown=risk.get("breakdown"),
+            ))
+            await db.commit()
+        except Exception:
+            pass
+
     return risk
 
 

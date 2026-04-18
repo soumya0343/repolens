@@ -7,6 +7,14 @@ import { toast } from 'sonner';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
+interface RiskBreakdown {
+  churn: number;
+  bus_factor: number;
+  violations: number;
+  coupling: number;
+  secrets: number;
+}
+
 interface FileData {
   path: string;
   language: string;
@@ -14,6 +22,9 @@ interface FileData {
   risk_score: number;
   changes?: number;
   violations: string[];
+  secret_count?: number;
+  highest_secret_severity?: string | null;
+  risk_breakdown?: RiskBreakdown;
 }
 
 interface RepoMeta { id: string; name: string; owner: string; synced_at?: string }
@@ -50,6 +61,17 @@ function churnLabel(f: FileData): string {
   if (f.risk_score >= 75 || changes > 50) return 'High';
   if (f.risk_score >= 40 || changes > 20) return 'Medium';
   return 'Low';
+}
+
+function riskReasons(file: FileData): { label: string; color: string }[] {
+  const tags: { label: string; color: string }[] = [];
+  const b = file.risk_breakdown;
+  if ((file.secret_count ?? 0) > 0) tags.push({ label: '🔑 SECRETS', color: 'var(--danger)' });
+  if (b && b.churn >= 20) tags.push({ label: 'HIGH CHURN', color: 'var(--warning)' });
+  if (b && b.bus_factor >= 20) tags.push({ label: 'BUS FACTOR', color: 'var(--warning)' });
+  if ((file.violations as unknown[])?.length > 0) tags.push({ label: 'VIOLATIONS', color: 'var(--danger)' });
+  if (b && b.coupling >= 5) tags.push({ label: 'COUPLED', color: '#ccaa00' });
+  return tags;
 }
 
 function churnColor(label: string): string {
@@ -359,7 +381,7 @@ const Files: React.FC = () => {
                   }}
                 >
                   {/* File path */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '0.85rem', flexShrink: 0, color: isHighRisk ? 'var(--warning)' : 'var(--text-muted)' }}>
                       {isHighRisk ? '⚠' : '▪'}
                     </span>
@@ -369,16 +391,16 @@ const Files: React.FC = () => {
                     }}>
                       {file.path}
                     </span>
-                    {file.violations?.length > 0 && (
-                      <span style={{
-                        fontFamily: 'var(--mono)', fontSize: '0.58rem', fontWeight: 600,
-                        background: 'rgba(255,65,65,0.12)', color: 'var(--danger)',
-                        border: '1px solid rgba(255,65,65,0.25)',
+                    {riskReasons(file).map(t => (
+                      <span key={t.label} style={{
+                        fontFamily: 'var(--sans)', fontSize: '0.56rem', fontWeight: 700,
+                        color: t.color, border: `1px solid ${t.color}`,
                         padding: '1px 5px', borderRadius: 2, flexShrink: 0,
+                        letterSpacing: '0.06em', opacity: 0.85,
                       }}>
-                        {file.violations.length} violations
+                        {t.label}
                       </span>
-                    )}
+                    ))}
                   </div>
 
                   {/* Risk score */}
@@ -503,6 +525,45 @@ const Files: React.FC = () => {
                   </div>
                 </div>
               </div>
+
+              {/* Risk breakdown */}
+              {selectedFile.risk_breakdown && (() => {
+                const b = selectedFile.risk_breakdown!;
+                const rows: { label: string; value: number; max: number; color: string; tip: string }[] = [
+                  { label: 'SECRETS',     value: b.secrets,     max: 50, color: 'var(--danger)',  tip: 'Active secret/credential findings in this file. Each secret adds 25pts, capped at 50.' },
+                  { label: 'CHURN',       value: b.churn,       max: 35, color: 'var(--warning)', tip: 'How often this file changes relative to the most-changed file in the repo. Max 35pts.' },
+                  { label: 'BUS FACTOR',  value: b.bus_factor,  max: 35, color: 'var(--warning)', tip: 'HHI ownership concentration — 1 person owns all commits = full 35pts.' },
+                  { label: 'VIOLATIONS',  value: b.violations,  max: 30, color: 'var(--danger)',  tip: 'Architectural rule violations found in this file. 10pts each, capped at 30.' },
+                  { label: 'COUPLING',    value: b.coupling,    max: 10, color: '#ccaa00',         tip: 'How strongly this file co-changes with others. Bonus up to 10pts.' },
+                ];
+                return (
+                  <div>
+                    <div style={{ fontFamily: 'var(--sans)', fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>
+                      RISK BREAKDOWN
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+                      {rows.map(r => (
+                        <div key={r.label}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.2rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <span style={{ fontFamily: 'var(--sans)', fontSize: '0.62rem', fontWeight: 700, color: r.value > 0 ? r.color : 'var(--text-muted)', letterSpacing: '0.08em' }}>
+                                {r.label}
+                              </span>
+                              <Tooltip text={r.tip} position="right" />
+                            </div>
+                            <span style={{ fontFamily: 'var(--mono)', fontSize: '0.62rem', color: r.value > 0 ? r.color : 'var(--text-muted)' }}>
+                              +{r.value}pts
+                            </span>
+                          </div>
+                          <div style={{ height: 5, background: 'var(--surface-raised)', borderRadius: 2, overflow: 'hidden' }}>
+                            <div style={{ height: '100%', background: r.color, borderRadius: 2, width: `${Math.round((r.value / r.max) * 100)}%`, opacity: r.value > 0 ? 0.8 : 0 }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {detailLoading ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>

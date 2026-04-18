@@ -10,6 +10,7 @@ interface ConnectedRepo {
   name: string;
   owner: string;
   synced_at?: string;
+  risk_score?: number | null;
   stats?: {
     commits: number;
     pull_requests: number;
@@ -22,12 +23,15 @@ interface LogEntry {
   message: string;
 }
 
-function repoHealth(synced_at?: string): 'HEALTHY' | 'STALE' | 'OFFLINE' {
+function repoHealth(synced_at?: string, risk_score?: number | null): 'HEALTHY' | 'AT RISK' | 'CRITICAL' | 'STALE' | 'OFFLINE' | 'SCANNING' {
   if (!synced_at) return 'OFFLINE';
   const hours = (Date.now() - new Date(synced_at).getTime()) / 3_600_000;
-  if (hours < 48) return 'HEALTHY';
-  if (hours < 168) return 'STALE';
-  return 'OFFLINE';
+  if (hours > 168) return 'OFFLINE';
+  if (hours > 48) return 'STALE';
+  if (risk_score == null) return 'SCANNING';
+  if (risk_score >= 75) return 'CRITICAL';
+  if (risk_score >= 45) return 'AT RISK';
+  return 'HEALTHY';
 }
 
 function formatStat(n: number | undefined): string {
@@ -62,9 +66,12 @@ function buildLogs(repos: ConnectedRepo[]): LogEntry[] {
 }
 
 const healthStyle: Record<string, React.CSSProperties> = {
-  HEALTHY: { background: 'var(--accent)', color: '#000', border: 'none' },
-  STALE:   { background: 'transparent', color: 'var(--warning)', border: '1px solid var(--warning)' },
-  OFFLINE: { background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)' },
+  HEALTHY:  { background: 'var(--accent)',  color: '#000',              border: 'none' },
+  'AT RISK':{ background: 'transparent',    color: 'var(--warning)',    border: '1px solid var(--warning)' },
+  CRITICAL: { background: 'transparent',    color: 'var(--danger)',     border: '1px solid var(--danger)' },
+  STALE:    { background: 'transparent',    color: 'var(--warning)',    border: '1px solid var(--warning)' },
+  OFFLINE:  { background: 'transparent',    color: 'var(--text-muted)', border: '1px solid var(--border)' },
+  SCANNING: { background: 'transparent',    color: 'var(--text-muted)', border: '1px solid var(--border)', opacity: 0.7 },
 };
 
 const Home: React.FC = () => {
@@ -232,7 +239,7 @@ const Home: React.FC = () => {
             style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: '1rem' }}
           >
             {filtered.map((repo, i) => {
-              const health = repoHealth(repo.synced_at);
+              const health = repoHealth(repo.synced_at, repo.risk_score);
               const shortId = `REPO-${String.fromCharCode(65 + (i % 26))}${String(i + 1).padStart(2, '0')}`;
               return (
                 <div
@@ -297,7 +304,7 @@ const Home: React.FC = () => {
                     {[
                       { label: 'COMMITS',  value: formatStat(repo.stats?.commits) },
                       { label: 'OPEN PRS', value: formatStat(repo.stats?.pull_requests) },
-                      { label: 'COVERAGE', value: health === 'HEALTHY' ? 'LIVE' : '—' },
+                      { label: 'COVERAGE', value: health === 'OFFLINE' || health === 'SCANNING' ? '—' : 'LIVE' },
                     ].map(stat => (
                       <div key={stat.label}>
                         <div style={{
@@ -309,7 +316,7 @@ const Home: React.FC = () => {
                         </div>
                         <div style={{
                           fontFamily: 'var(--heading)', fontSize: '1.05rem', fontWeight: 700,
-                          color: stat.label === 'COVERAGE' && health === 'HEALTHY'
+                          color: stat.label === 'COVERAGE' && health !== 'OFFLINE' && health !== 'SCANNING'
                             ? 'var(--accent)' : 'var(--text-h)',
                           letterSpacing: '-0.01em',
                         }}>
