@@ -36,6 +36,17 @@ async def get_current_user(authorization: str = Header(None), db: AsyncSession =
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+
+async def _require_repo_access(repo_id: str, user: User, db: AsyncSession) -> None:
+    repo_result = await db.execute(
+        select(Repo.id).join(UserRepo).where(
+            Repo.id == repo_id,
+            UserRepo.user_id == user.id,
+        )
+    )
+    if not repo_result.first():
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+
 @router.get("/")
 async def list_pull_requests(
     repo_id: str = None,
@@ -46,22 +57,26 @@ async def list_pull_requests(
     db: AsyncSession = Depends(get_db)
 ):
     """List pull requests, optionally filtered by repository"""
-    query = select(PullRequest)
+    query = select(
+        PullRequest.id,
+        PullRequest.github_id,
+        PullRequest.number,
+        PullRequest.title,
+        PullRequest.state,
+        PullRequest.author_login,
+        PullRequest.created_at,
+        PullRequest.closed_at,
+        PullRequest.merged_at,
+        PullRequest.predicted_risk_score,
+        PullRequest.repo_id,
+    )
 
     # If repo_id is provided, verify user has access and filter by repo
     if repo_id:
-        # Verify user has access to this repo
-        repo_result = await db.execute(
-            select(Repo).join(UserRepo).where(
-                Repo.id == repo_id,
-                UserRepo.user_id == user.id
-            )
-        )
-        repo = repo_result.scalars().first()
-        if not repo:
-            raise HTTPException(status_code=404, detail="Repository not found or access denied")
-
+        await _require_repo_access(repo_id, user, db)
         query = query.where(PullRequest.repo_id == repo_id)
+    else:
+        query = query.join(UserRepo, PullRequest.repo_id == UserRepo.repo_id).where(UserRepo.user_id == user.id)
 
     # Filter by state
     if state != "all":
@@ -71,10 +86,10 @@ async def list_pull_requests(
             query = query.where(PullRequest.state == state.upper())
 
     # Apply pagination
-    query = query.limit(limit).offset(offset)
+    query = query.order_by(PullRequest.created_at.desc()).limit(limit).offset(offset)
 
     result = await db.execute(query)
-    prs = result.scalars().all()
+    prs = result.all()
 
     return [
         {
@@ -118,7 +133,9 @@ async def get_pull_request_details(
 
     # Get comments for this PR
     comments_result = await db.execute(
-        select(PRComment).where(PRComment.pr_id == pr_id)
+        select(PRComment)
+        .where(PRComment.pr_id == pr_id)
+        .order_by(PRComment.created_at.asc())
     )
     comments = comments_result.scalars().all()
 

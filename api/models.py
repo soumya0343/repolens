@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Boolean, UniqueConstraint, Float
+from sqlalchemy import Column, String, Integer, DateTime, JSON, ForeignKey, Boolean, UniqueConstraint, Float, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -28,6 +28,10 @@ class Repo(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     config = Column(JSON)
 
+    __table_args__ = (
+        Index("ix_repos_owner_name", "owner", "name"),
+    )
+
 class UserRepo(Base):
     __tablename__ = "user_repos"
 
@@ -36,6 +40,11 @@ class UserRepo(Base):
     repo_id = Column(UUID(as_uuid=True), ForeignKey("repos.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(32), default="admin") # User's derived permission level
 
+    __table_args__ = (
+        Index("ix_user_repos_user_id_repo_id", "user_id", "repo_id"),
+        Index("ix_user_repos_repo_id", "repo_id"),
+    )
+
 class Commit(Base):
     """Stores historical commit data for the CoChangeOracle"""
     __tablename__ = "commits"
@@ -43,7 +52,11 @@ class Commit(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_id = Column(UUID(as_uuid=True), ForeignKey("repos.id", ondelete="CASCADE"), index=True)
     oid = Column(String, index=True) # Git SHA
-    __table_args__ = (UniqueConstraint('repo_id', 'oid'),)
+    __table_args__ = (
+        UniqueConstraint('repo_id', 'oid'),
+        Index("ix_commits_repo_committed_date", "repo_id", "committed_date"),
+        Index("ix_commits_repo_author_date", "repo_id", "author_login", "committed_date"),
+    )
     message = Column(String)
     author_email = Column(String, index=True)
     author_login = Column(String, index=True)
@@ -76,6 +89,12 @@ class PullRequest(Base):
     predicted_risk_score = Column(Integer, nullable=True)
     explanation = Column(JSON, nullable=True)
 
+    __table_args__ = (
+        Index("ix_pull_requests_repo_created_at", "repo_id", "created_at"),
+        Index("ix_pull_requests_repo_state_created_at", "repo_id", "state", "created_at"),
+        Index("ix_pull_requests_repo_merged_at", "repo_id", "merged_at"),
+    )
+
 
 class PRComment(Base):
     """Stores textual reviews on PRs for ChronosGraph Reviewer Suggestion"""
@@ -87,6 +106,10 @@ class PRComment(Base):
     author_login = Column(String, index=True)
     body = Column(String)
     created_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_pr_comments_pr_id_created_at", "pr_id", "created_at"),
+    )
 
 
 class Issue(Base):
@@ -122,6 +145,12 @@ class CIRun(Base):
 
     # Store TestPulse flaky test classifications here
     analysis_results = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("ix_ci_runs_repo_created_at", "repo_id", "created_at"),
+        Index("ix_ci_runs_repo_event_branch_created", "repo_id", "event", "head_branch", "created_at"),
+        Index("ix_ci_runs_repo_name_sha_conclusion", "repo_id", "name", "head_sha", "conclusion"),
+    )
     
     
 class PRFile(Base):
@@ -135,6 +164,10 @@ class PRFile(Base):
     deletions = Column(Integer, default=0)
     change_type = Column(String)  # ADDED, MODIFIED, DELETED, RENAMED
 
+    __table_args__ = (
+        Index("ix_pr_files_pr_id_path", "pr_id", "path"),
+    )
+
 
 class CommitFile(Base):
     """Tracks files changed in each commit for fine-grained analysis"""
@@ -147,6 +180,11 @@ class CommitFile(Base):
     deletions = Column(Integer, default=0)
     change_type = Column(String) # ADDED, MODIFIED, DELETED
 
+    __table_args__ = (
+        Index("ix_commit_files_commit_id_file_path", "commit_id", "file_path"),
+        Index("ix_commit_files_file_path_commit_id", "file_path", "commit_id"),
+    )
+
 class ArchAnalysis(Base):
     __tablename__ = 'arch_analysis'
 
@@ -155,6 +193,10 @@ class ArchAnalysis(Base):
     violations = Column(JSON, nullable=True)
     import_cycles = Column(JSON, nullable=True)
     parsed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_arch_analysis_repo_parsed_at", "repo_id", "parsed_at"),
+    )
 
 
 class RepoScoreSnapshot(Base):
@@ -167,6 +209,10 @@ class RepoScoreSnapshot(Base):
     label = Column(String(32))
     breakdown = Column(JSON)
     recorded_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        Index("ix_repo_score_snapshots_repo_recorded_at", "repo_id", "recorded_at"),
+    )
 
 
 class SecretFinding(Base):
@@ -193,4 +239,5 @@ class SecretFinding(Base):
 
     __table_args__ = (
         UniqueConstraint('repo_id', 'source', 'pr_number', 'fingerprint_hash', name='uq_secret_finding_scope_fingerprint'),
+        Index("ix_secret_findings_repo_status_last_seen", "repo_id", "status", "last_seen_at"),
     )

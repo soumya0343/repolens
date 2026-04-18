@@ -149,7 +149,7 @@ class CoChangeOracle:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.min_support = 0.02  # Minimum support threshold (2%)
+        self.min_support = 0.10  # Minimum support threshold (10%)
         self.max_itemset_size = 3  # Maximum files in a pattern
         self.decay_half_life = 30  # Days for DERAR decay
 

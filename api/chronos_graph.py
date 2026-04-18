@@ -85,30 +85,38 @@ class ChronosGraph:
         """
         Build commit co-change layer using real file data where available.
         """
-        # Get commits with their files
         result = await self.db.execute(
-            select(Commit).where(Commit.repo_id == repo_id)
+            select(Commit.id, Commit.author_login, Commit.committed_date)
+            .where(Commit.repo_id == repo_id)
         )
-        commits = result.scalars().all()
+        commits = result.all()
+        if not commits:
+            return {"developers": 0, "files": 0}
+
+        files_result = await self.db.execute(
+            select(CommitFile.commit_id, CommitFile.file_path)
+            .join(Commit, Commit.id == CommitFile.commit_id)
+            .where(Commit.repo_id == repo_id)
+        )
+        files_by_commit = defaultdict(list)
+        for commit_id, file_path in files_result.all():
+            files_by_commit[commit_id].append(file_path)
         
         author_files = defaultdict(set)
         
         # Collect all (author, file, date) triples first, then batch-write with UNWIND
         batch = []
-        for commit in commits:
-            if not commit.author_login:
+        for commit_id, author_login, committed_date in commits:
+            if not author_login:
                 continue
-            cf_result = await self.db.execute(
-                select(CommitFile.file_path).where(CommitFile.commit_id == commit.id)
-            )
-            files = cf_result.scalars().all()
+            files = files_by_commit.get(commit_id, [])
             if not files:
                 continue
-            author_files[commit.author_login].update(files)
-            date_str = commit.committed_date.isoformat() if commit.committed_date else None
+            author_files[author_login].update(files)
+            date_str = committed_date.isoformat() if committed_date else None
             for file in files:
                 batch.append({
-                    "author": commit.author_login,
+                    "author": author_login,
                     "file": file,
                     "date": date_str,
                 })
@@ -139,25 +147,31 @@ class ChronosGraph:
         Build PR review layer.
         Tracks who reviews whose code.
         """
-        # Get PRs and their comments
         result = await self.db.execute(
-            select(PullRequest).where(PullRequest.repo_id == repo_id)
+            select(PullRequest.id, PullRequest.author_login, PullRequest.number)
+            .where(PullRequest.repo_id == repo_id)
         )
-        prs = result.scalars().all()
+        prs = result.all()
+        if not prs:
+            return {"prs": 0, "reviewers": 0}
+
+        comments_result = await self.db.execute(
+            select(PRComment.pr_id, PRComment.author_login)
+            .join(PullRequest, PullRequest.id == PRComment.pr_id)
+            .where(PullRequest.repo_id == repo_id, PRComment.author_login.isnot(None))
+        )
+        reviewers_by_pr = defaultdict(set)
+        for pr_id, author_login in comments_result.all():
+            reviewers_by_pr[pr_id].add(author_login)
         
         # Get reviewers for each PR
         pr_reviewers = {}
-        for pr in prs:
-            if pr.author_login:
-                comment_result = await self.db.execute(
-                    select(PRComment).where(PRComment.pr_id == pr.id)
-                )
-                comments = comment_result.scalars().all()
-                reviewers = set(c.author_login for c in comments if c.author_login)
-                pr_reviewers[pr.id] = {
-                    "author": pr.author_login,
-                    "reviewers": reviewers,
-                    "pr_number": pr.number
+        for pr_id, author_login, number in prs:
+            if author_login:
+                pr_reviewers[pr_id] = {
+                    "author": author_login,
+                    "reviewers": reviewers_by_pr.get(pr_id, set()),
+                    "pr_number": number
                 }
         
         # Batch-write PR nodes and review relationships with UNWIND

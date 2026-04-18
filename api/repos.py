@@ -5,7 +5,6 @@ from sqlalchemy import func, text
 import httpx
 import jwt
 import os
-import asyncio
 import datetime
 from collections import defaultdict
 
@@ -44,6 +43,19 @@ async def get_current_user(authorization: str = Header(None), db: AsyncSession =
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+async def _require_repo_access(repo_id: str, user: User, db: AsyncSession) -> Repo:
+    result = await db.execute(
+        select(Repo).join(UserRepo).where(
+            Repo.id == repo_id,
+            UserRepo.user_id == user.id,
+        )
+    )
+    repo = result.scalars().first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    return repo
 
 @router.get("/github/available")
 async def get_available_github_repos(user: User = Depends(get_current_user)):
@@ -139,12 +151,7 @@ async def connect_repository(payload: dict, user: User = Depends(get_current_use
 @router.post("/{repo_id}/backfill")
 async def trigger_backfill(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Manual trigger for re-running backfill + dependent jobs"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    repo = await _require_repo_access(repo_id, user, db)
 
     redis_pool = await get_redis_pool()
     await redis_pool.enqueue_job('run_backfill_job', repo_id, user.github_token, _queue_name=BACKFILL_QUEUE)
@@ -160,32 +167,29 @@ async def trigger_backfill(repo_id: str, user: User = Depends(get_current_user),
 async def list_connected_repos(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List already connected repos for the user"""
     result = await db.execute(
-        select(Repo).join(UserRepo).where(UserRepo.user_id == user.id)
+        select(Repo.id, Repo.name, Repo.owner, Repo.synced_at)
+        .join(UserRepo, UserRepo.repo_id == Repo.id)
+        .where(UserRepo.user_id == user.id)
+        .order_by(Repo.created_at.desc())
     )
-    repos = result.scalars().all()
-    return [{"id": str(r.id), "name": r.name, "owner": r.owner, "synced_at": r.synced_at} for r in repos]
+    return [
+        {"id": str(row.id), "name": row.name, "owner": row.owner, "synced_at": row.synced_at}
+        for row in result.all()
+    ]
 
 @router.get("/{repo_id}")
 async def get_repo_details(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get detailed information about a specific repository"""
-    # Verify user has access to this repo
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    repo = await _require_repo_access(repo_id, user, db)
 
     # Get basic stats
-    commit_count = await db.execute(
-        select(func.count(Commit.id)).where(Commit.repo_id == repo_id)
+    counts_result = await db.execute(
+        select(
+            select(func.count(Commit.id)).where(Commit.repo_id == repo_id).scalar_subquery().label("commit_count"),
+            select(func.count(PullRequest.id)).where(PullRequest.repo_id == repo_id).scalar_subquery().label("pr_count"),
+        )
     )
-    pr_count = await db.execute(
-        select(func.count(PullRequest.id)).where(PullRequest.repo_id == repo_id)
-    )
+    counts = counts_result.one()
 
     return {
         "id": str(repo.id),
@@ -196,8 +200,8 @@ async def get_repo_details(repo_id: str, user: User = Depends(get_current_user),
         "synced_at": repo.synced_at,
         "config": repo.config or {},
         "stats": {
-            "commits": commit_count.scalar(),
-            "pull_requests": pr_count.scalar()
+            "commits": counts.commit_count,
+            "pull_requests": counts.pr_count
         }
     }
 
@@ -209,12 +213,7 @@ async def update_repo_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Update repository configuration (e.g. risk weight overrides)"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    repo = await _require_repo_access(repo_id, user, db)
 
     config = dict(repo.config or {})
     config.update(payload.get("config", {}))
@@ -247,12 +246,7 @@ def _serialize_secret_finding(finding: SecretFinding) -> dict:
 @router.get("/{repo_id}/secrets")
 async def get_repo_secrets(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List masked secret findings for a repository."""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     findings_result = await db.execute(
         select(SecretFinding)
@@ -272,12 +266,7 @@ async def update_secret_finding(
     db: AsyncSession = Depends(get_db),
 ):
     """Update secret finding status without exposing raw secret values."""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     status = payload.get("status")
     allowed = {"active", "resolved", "false_positive", "accepted_risk"}
@@ -298,15 +287,7 @@ async def update_secret_finding(
 @router.get("/{repo_id}/files")
 async def get_repo_files(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get files in a repository with their risk scores"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     # Query actual files from commit_files table
     files_result = await db.execute(
@@ -438,16 +419,7 @@ def get_language_from_extension(file_path: str) -> str:
 @router.get("/{repo_id}/coupling")
 async def get_repo_coupling(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get file coupling analysis for the repository"""
-    # Verify user has access to this repo
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     try:
         oracle = await get_cochange_oracle(db)
@@ -458,22 +430,16 @@ async def get_repo_coupling(repo_id: str, user: User = Depends(get_current_user)
 @router.get("/{repo_id}/violations")
 async def get_repo_violations(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get architectural violations for the repository"""
-    # Verify user has access to this repo
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     # Try to get violations from ArchAnalysis table
     arch_result = await db.execute(
-        select(ArchAnalysis).where(ArchAnalysis.repo_id == repo_id)
+        select(ArchAnalysis)
+        .where(ArchAnalysis.repo_id == repo_id)
+        .order_by(ArchAnalysis.parsed_at.desc())
+        .limit(1)
     )
-    arch_analysis = arch_result.scalar_one_or_none()
+    arch_analysis = arch_result.scalars().first()
     
     if arch_analysis and arch_analysis.violations:
         return arch_analysis.violations
@@ -523,12 +489,7 @@ async def get_repo_risk(
     db: AsyncSession = Depends(get_db),
 ):
     """Unified risk score aggregated from all engines"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    repo = await _require_repo_access(repo_id, user, db)
 
     config = repo.config or {}
     weights = config.get("weights_normalized")  # None = use defaults
@@ -548,18 +509,77 @@ async def get_repo_releases(
     db: AsyncSession = Depends(get_db),
 ):
     """DORA metrics for the repository"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     try:
         tracker = await get_release_health_tracker(db)
         return await tracker.get_dora_metrics(repo_id, days)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DORA metrics failed: {e}")
+
+
+@router.get("/{repo_id}/ci/stats")
+async def get_ci_stats(
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Latest CI run summary for the CI dashboard."""
+    repo = await _require_repo_access(repo_id, user, db)
+
+    latest_result = await db.execute(
+        select(CIRun)
+        .where(CIRun.repo_id == repo_id)
+        .order_by(CIRun.created_at.desc())
+        .limit(1)
+    )
+    latest = latest_result.scalars().first()
+    if not latest:
+        return {
+            "pipeline_status": "unknown",
+            "total_duration_seconds": None,
+            "test_coverage": None,
+            "coverage_delta": None,
+            "unit_tests_passed": 0,
+            "unit_tests_total": 0,
+            "unit_duration_seconds": None,
+            "unit_flaky_count": 0,
+            "integration_tests_passed": 0,
+            "integration_tests_total": 0,
+            "integration_duration_seconds": None,
+            "integration_failures": 0,
+            "branch": repo.default_branch,
+            "head_sha": "",
+            "run_started_at": None,
+            "job_log": [],
+        }
+
+    analysis = latest.analysis_results or {}
+    clusters = analysis.get("clusters") or []
+    job_log = [
+        f"{cluster.get('count', 0)}x {cluster.get('template', '')}"
+        for cluster in clusters[:20]
+        if cluster.get("template")
+    ]
+
+    return {
+        "pipeline_status": latest.conclusion or latest.status or "unknown",
+        "total_duration_seconds": analysis.get("total_duration_seconds"),
+        "test_coverage": analysis.get("test_coverage"),
+        "coverage_delta": analysis.get("coverage_delta"),
+        "unit_tests_passed": analysis.get("unit_tests_passed", 0),
+        "unit_tests_total": analysis.get("unit_tests_total", 0),
+        "unit_duration_seconds": analysis.get("unit_duration_seconds"),
+        "unit_flaky_count": analysis.get("unit_flaky_count", 0),
+        "integration_tests_passed": analysis.get("integration_tests_passed", 0),
+        "integration_tests_total": analysis.get("integration_tests_total", 0),
+        "integration_duration_seconds": analysis.get("integration_duration_seconds"),
+        "integration_failures": analysis.get("integration_failures", 0),
+        "branch": latest.head_branch or repo.default_branch,
+        "head_sha": latest.head_sha or "",
+        "run_started_at": latest.created_at.isoformat() if latest.created_at else None,
+        "job_log": job_log,
+    }
 
 
 @router.get("/{repo_id}/tests/flaky")
@@ -570,12 +590,7 @@ async def get_flaky_tests(
     db: AsyncSession = Depends(get_db),
 ):
     """CI runs ranked by flakiness probability from TestPulse analysis"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     try:
         from test_pulse import get_test_pulse
@@ -593,12 +608,7 @@ async def get_bus_factor(
     db: AsyncSession = Depends(get_db),
 ):
     """Bus factor and code ownership analysis"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     try:
         churn_a = await get_churn_analyzer(db)
@@ -614,12 +624,7 @@ async def get_team_graph(
     db: AsyncSession = Depends(get_db),
 ):
     """Social graph nodes and edges for D3.js visualization"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     # Get developer list from commits
     devs_result = await db.execute(
@@ -688,16 +693,7 @@ async def get_team_graph(
 @router.post("/{repo_id}/graph/build")
 async def build_repo_graph(repo_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Build the multi-layer graph for a repository in Neo4j"""
-    # Verify user has access to this repo
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     # Build the graph
     chronos = await get_chronos_graph(db)
@@ -709,16 +705,7 @@ async def build_repo_graph(repo_id: str, user: User = Depends(get_current_user),
 @router.get("/{repo_id}/graph/stmc")
 async def get_stmc_score(repo_id: str, file1: str, file2: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get STMC coupling score between two files"""
-    # Verify user has access
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     chronos = await get_chronos_graph(db)
     score = await chronos.get_stmc_score(repo_id, file1, file2)
@@ -729,16 +716,7 @@ async def get_stmc_score(repo_id: str, file1: str, file2: str, user: User = Depe
 @router.get("/{repo_id}/reviewers/suggest")
 async def suggest_reviewers(repo_id: str, pr_id: str = None, exclude: str = None, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Suggest reviewers for a PR based on expertise"""
-    # Verify user has access
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     exclude_list = exclude.split(",") if exclude else []
     
@@ -751,16 +729,7 @@ async def suggest_reviewers(repo_id: str, pr_id: str = None, exclude: str = None
 @router.get("/{repo_id}/developer/{login}/expertise")
 async def get_developer_expertise(repo_id: str, login: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get expertise profile for a developer"""
-    # Verify user has access
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(
-            Repo.id == repo_id,
-            UserRepo.user_id == user.id
-        )
-    )
-    repo = result.scalars().first()
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     chronos = await get_chronos_graph(db)
     expertise = await chronos.get_developer_expertise(repo_id, login)
@@ -778,11 +747,7 @@ async def get_score_history(
     db: AsyncSession = Depends(get_db),
 ):
     """30-day risk score history for the overview sparkline"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    if not result.scalars().first():
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
     rows = await db.execute(
@@ -806,11 +771,7 @@ async def get_file_detail(
     db: AsyncSession = Depends(get_db),
 ):
     """Detailed metrics for a single file: churn history, ownership, coupling rules, violations"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    if not result.scalars().first():
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     # Churn history — weekly buckets for last 90 days
     cutoff_90 = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
@@ -902,11 +863,7 @@ async def generate_arch_policy_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Auto-generate an architectural policy from violations and repo structure"""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    if not result.scalars().first():
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     arch_result = await db.execute(
         select(ArchAnalysis)
@@ -930,11 +887,7 @@ async def suggest_refactoring(
     db: AsyncSession = Depends(get_db),
 ):
     """Suggest concrete refactoring steps for architectural violations in a file."""
-    result = await db.execute(
-        select(Repo).join(UserRepo).where(Repo.id == repo_id, UserRepo.user_id == user.id)
-    )
-    if not result.scalars().first():
-        raise HTTPException(status_code=404, detail="Repository not found or access denied")
+    await _require_repo_access(repo_id, user, db)
 
     arch_result = await db.execute(
         select(ArchAnalysis)

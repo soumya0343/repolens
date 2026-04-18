@@ -1,8 +1,11 @@
 import os
+import logging
+import time
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from auth import router as auth_router
 from repos import router as repos_router
@@ -15,6 +18,7 @@ from database import engine, Base
 import models  # ensure all model classes are registered with Base
 
 app = FastAPI()
+logger = logging.getLogger("repolens.api")
 
 
 _WEAK_SECRETS = {"super_secret_jwt_key", "internal_key", ""}
@@ -44,6 +48,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_request_timing(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - started) * 1000
+    if duration_ms >= 250:
+        logger.info(
+            "slow_request method=%s path=%s status=%s duration_ms=%.1f",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+        )
+    response.headers["X-Process-Time-Ms"] = f"{duration_ms:.1f}"
+    return response
 
 app.include_router(auth_router)
 app.include_router(repos_router)
