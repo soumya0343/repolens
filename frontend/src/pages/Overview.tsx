@@ -174,6 +174,13 @@ const Overview: React.FC = () => {
     loadAll();
   }, [repoId, navigate, loadAll]);
 
+  // Poll every 30s while ingestion is in progress (synced_at is null)
+  useEffect(() => {
+    if (loading || meta?.synced_at) return;
+    const id = setInterval(loadAll, 30_000);
+    return () => clearInterval(id);
+  }, [loading, meta?.synced_at, loadAll]);
+
   const triggerBackfill = async () => {
     if (!repoId) return;
     setBackfilling(true); setBackfillMsg(null);
@@ -272,8 +279,6 @@ const Overview: React.FC = () => {
         </span>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <span style={{ fontFamily: 'var(--sans)', fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500, letterSpacing: '0.08em', cursor: 'pointer' }}>DOCS</span>
-          <span style={{ fontFamily: 'var(--sans)', fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500, letterSpacing: '0.08em', cursor: 'pointer' }}>SUPPORT</span>
           <button
             onClick={triggerBackfill}
             disabled={backfilling}
@@ -331,6 +336,21 @@ const Overview: React.FC = () => {
             {[1,2,3,4,5,6].map(i => (
               <div key={i} className="skeleton" style={{ height: 140, borderRadius: 3 }} />
             ))}
+          </div>
+        ) : !meta?.synced_at ? (
+          <div style={{
+            background: 'var(--surface)', border: '1px solid var(--accent-border)',
+            borderRadius: 6, padding: '2rem', textAlign: 'center',
+          }}>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: '0.85rem', color: 'var(--accent)', letterSpacing: '0.08em', marginBottom: '0.5rem' }}>
+              ⟳ BACKFILL IN PROGRESS
+            </div>
+            <div style={{ fontFamily: 'var(--sans)', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+              Ingesting commits, PRs, and CI data from GitHub. This usually takes ~1 minute.
+            </div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--text-muted)', letterSpacing: '0.06em' }}>
+              Page will refresh automatically when data is ready.
+            </div>
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: '1rem', alignItems: 'start' }}>

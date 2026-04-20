@@ -200,6 +200,7 @@ export default function Settings() {
 
   return (
     <Layout activeNav="settings" repoId={repoId}>
+      <div style={{ flex: 1, overflowY: "auto" }}>
       <div style={{ padding: "32px 36px", maxWidth: 780 }}>
 
         {/* Header */}
@@ -427,6 +428,7 @@ export default function Settings() {
           </div>
         </div>
 
+      </div>
       </div>
     </Layout>
   );

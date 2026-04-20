@@ -23,8 +23,8 @@ interface LogEntry {
   message: string;
 }
 
-function repoHealth(synced_at?: string, risk_score?: number | null): 'HEALTHY' | 'AT RISK' | 'CRITICAL' | 'STALE' | 'OFFLINE' | 'SCANNING' {
-  if (!synced_at) return 'OFFLINE';
+function repoHealth(synced_at?: string, risk_score?: number | null): 'HEALTHY' | 'AT RISK' | 'CRITICAL' | 'STALE' | 'OFFLINE' | 'SCANNING' | 'INGESTING' {
+  if (!synced_at) return 'INGESTING';
   const hours = (Date.now() - new Date(synced_at).getTime()) / 3_600_000;
   if (hours > 168) return 'OFFLINE';
   if (hours > 48) return 'STALE';
@@ -70,21 +70,27 @@ const healthStyle: Record<string, React.CSSProperties> = {
   'AT RISK':{ background: 'transparent',    color: 'var(--warning)',    border: '1px solid var(--warning)' },
   CRITICAL: { background: 'transparent',    color: 'var(--danger)',     border: '1px solid var(--danger)' },
   STALE:    { background: 'transparent',    color: 'var(--warning)',    border: '1px solid var(--warning)' },
-  OFFLINE:  { background: 'transparent',    color: 'var(--text-muted)', border: '1px solid var(--border)' },
-  SCANNING: { background: 'transparent',    color: 'var(--text-muted)', border: '1px solid var(--border)', opacity: 0.7 },
+  OFFLINE:   { background: 'transparent',    color: 'var(--text-muted)', border: '1px solid var(--border)' },
+  SCANNING:  { background: 'transparent',    color: 'var(--text-muted)', border: '1px solid var(--border)', opacity: 0.7 },
+  INGESTING: { background: 'transparent',    color: 'var(--accent)',     border: '1px solid var(--accent-border)' },
 };
+
+interface UserProfile { login: string; avatar_url?: string; }
 
 const Home: React.FC = () => {
   const navigate = useNavigate();
   const [repos, setRepos] = useState<ConnectedRepo[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [profile, setProfile] = useState<UserProfile | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (!token) { navigate('/'); return; }
+    const headers = { Authorization: `Bearer ${token}` };
+    axios.get(`${API_BASE_URL}/repos/me`, { headers }).then(res => setProfile(res.data)).catch(() => {});
     axios
-      .get(`${API_BASE_URL}/repos/`, { headers: { Authorization: `Bearer ${token}` } })
+      .get(`${API_BASE_URL}/repos/`, { headers })
       .then(res => setRepos(res.data))
       .catch(() => toast.error("Failed to load repos. Check your connection."))
       .finally(() => setLoading(false));
@@ -146,19 +152,18 @@ const Home: React.FC = () => {
         />
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', letterSpacing: '0.08em', fontWeight: 500, cursor: 'pointer' }}>DOCS</span>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', letterSpacing: '0.08em', fontWeight: 500, cursor: 'pointer' }}>SUPPORT</span>
-          <span style={{ color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.9rem' }}>🔔</span>
-          <div style={{
-            width: 30, height: 30,
-            background: 'var(--surface-raised)',
-            border: '1px solid var(--border)',
-            borderRadius: 3,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 600,
-            color: 'var(--text-muted)', cursor: 'pointer', letterSpacing: '0.04em',
-          }}>
-            USR
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+            {profile?.avatar_url
+              ? <img src={profile.avatar_url} alt={profile.login} style={{ width: 28, height: 28, borderRadius: 3, border: '1px solid var(--border)', display: 'block' }} />
+              : <div style={{ width: 28, height: 28, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                  {profile?.login?.[0]?.toUpperCase() ?? 'U'}
+                </div>
+            }
+            {profile?.login && (
+              <span style={{ fontFamily: 'var(--mono)', fontSize: '0.68rem', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>
+                {profile.login}
+              </span>
+            )}
           </div>
         </div>
       </header>
@@ -244,7 +249,7 @@ const Home: React.FC = () => {
               return (
                 <div
                   key={repo.id}
-                  onClick={() => { toast.info(`Opening ${repo.owner}/${repo.name}…`); navigate(`/repo/${repo.id}`); }}
+                  onClick={() => navigate(`/repo/${repo.id}`)}
                   style={{
                     background: 'var(--surface)',
                     border: '1px solid var(--border)',
@@ -297,11 +302,16 @@ const Home: React.FC = () => {
 
                   {/* Stats */}
                   <div style={{
-                    display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
-                    gap: '0.5rem', paddingTop: '0.75rem',
+                    paddingTop: '0.75rem',
                     borderTop: '1px solid var(--border)',
+                    ...(health !== 'INGESTING' && { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }),
                   }}>
-                    {[
+                    {health === 'INGESTING' ? (
+                      <div style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--accent)', letterSpacing: '0.06em', lineHeight: 1.6 }}>
+                        ⟳ Backfill in progress<br />
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>Check back in ~1 min</span>
+                      </div>
+                    ) : [
                       { label: 'COMMITS',  value: formatStat(repo.stats?.commits) },
                       { label: 'OPEN PRS', value: formatStat(repo.stats?.pull_requests) },
                       { label: 'COVERAGE', value: health === 'OFFLINE' || health === 'SCANNING' ? '—' : 'LIVE' },

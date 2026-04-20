@@ -215,7 +215,6 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
         {/* Bottom */}
         <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem', flexShrink: 0 }}>
           {[
-            { label: 'DOCS', icon: '▤', action: () => {} },
             { label: 'LOGOUT', icon: '↩', action: handleLogout, danger: true },
           ].map(item => (
             <button

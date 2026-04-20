@@ -219,9 +219,6 @@ const Files: React.FC = () => {
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
-          <span style={{ fontFamily: 'var(--sans)', fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500, letterSpacing: '0.08em', cursor: 'pointer' }}>DOCS</span>
-          <span style={{ fontFamily: 'var(--sans)', fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500, letterSpacing: '0.08em', cursor: 'pointer' }}>SUPPORT</span>
-          <span style={{ color: 'var(--text-muted)', cursor: 'pointer' }}>🔔</span>
           <div style={{ width: 30, height: 30, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 600, color: 'var(--text-muted)', cursor: 'pointer' }}>
             USR
           </div>

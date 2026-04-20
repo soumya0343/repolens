@@ -157,14 +157,6 @@ const PullRequests: React.FC = () => {
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
-          <span style={{ fontFamily: 'var(--sans)', fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500, letterSpacing: '0.08em', cursor: 'pointer' }}>DOCS</span>
-          <span style={{ fontFamily: 'var(--sans)', fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500, letterSpacing: '0.08em', cursor: 'pointer' }}>SUPPORT</span>
-          <div style={{ position: 'relative', cursor: 'pointer' }}>
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>🔔</span>
-            {highRisk.length > 0 && (
-              <div style={{ position: 'absolute', top: -2, right: -2, width: 7, height: 7, borderRadius: '50%', background: 'var(--accent)' }} />
-            )}
-          </div>
           <div style={{ width: 30, height: 30, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--sans)', fontSize: '0.65rem', fontWeight: 600, color: 'var(--text-muted)', cursor: 'pointer' }}>
             USR
           </div>

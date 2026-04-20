@@ -57,6 +57,11 @@ async def _require_repo_access(repo_id: str, user: User, db: AsyncSession) -> Re
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
     return repo
 
+@router.get("/me")
+async def get_current_user_profile(user: User = Depends(get_current_user)):
+    return {"login": user.login, "avatar_url": user.avatar_url}
+
+
 @router.get("/github/available")
 async def get_available_github_repos(user: User = Depends(get_current_user)):
     """Fetch repositories the user has access to on GitHub"""
