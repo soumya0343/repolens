@@ -64,12 +64,70 @@ const card: React.CSSProperties = {
   padding: "18px 20px",
 };
 
+interface WorkflowCheck {
+  has_workflows: boolean;
+  owner: string;
+  name: string;
+}
+
+const YAML_TEMPLATES: { label: string; lang: string; yaml: string }[] = [
+  {
+    label: "Node.js",
+    lang: "node",
+    yaml: `name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npm test`,
+  },
+  {
+    label: "Python",
+    lang: "python",
+    yaml: `name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: pytest`,
+  },
+  {
+    label: "Go",
+    lang: "go",
+    yaml: `name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: go test ./...`,
+  },
+];
+
 export default function CITests() {
   const { repoId } = useParams<{ repoId: string }>();
   const [stats, setStats] = useState<CIStats | null>(null);
   const [flaky, setFlaky] = useState<FlakyTest[]>([]);
   const [logExpanded, setLogExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [workflowCheck, setWorkflowCheck] = useState<WorkflowCheck | null>(null);
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncDone, setResyncDone] = useState(false);
+  const [copiedLang, setCopiedLang] = useState<string | null>(null);
+  const [activeTemplate, setActiveTemplate] = useState(0);
 
   useEffect(() => {
     if (!repoId) return;
@@ -80,8 +138,26 @@ export default function CITests() {
       setStats(s);
       setFlaky(Array.isArray(f) ? f : []);
       setLoading(false);
+      if (!s) {
+        apiFetch<WorkflowCheck>(`${API_BASE_URL}/repos/${repoId}/ci/workflow-check`)
+          .then(wc => setWorkflowCheck(wc));
+      }
     });
   }, [repoId]);
+
+  async function triggerResync() {
+    if (!repoId || resyncing) return;
+    setResyncing(true);
+    await fetch(`${API_BASE_URL}/repos/${repoId}/backfill`, { method: "POST", headers: authHdr() });
+    setResyncing(false);
+    setResyncDone(true);
+  }
+
+  function copyYaml(yaml: string, lang: string) {
+    navigator.clipboard.writeText(yaml);
+    setCopiedLang(lang);
+    setTimeout(() => setCopiedLang(null), 2000);
+  }
 
   const statusColor =
     stats?.pipeline_status === "success"
@@ -96,6 +172,133 @@ export default function CITests() {
       : stats?.pipeline_status === "failure"
       ? "FAILED ✗"
       : (stats?.pipeline_status ?? "UNKNOWN").toUpperCase();
+
+  if (!loading && !stats) {
+    const ghOwner = workflowCheck?.owner;
+    const ghName = workflowCheck?.name;
+    const hasWorkflows = workflowCheck?.has_workflows;
+    const actionsUrl = ghOwner && ghName ? `https://github.com/${ghOwner}/${ghName}/actions` : null;
+
+    return (
+      <Layout activeNav="ci" repoId={repoId}>
+        <div style={{ padding: "32px 36px", maxWidth: 860, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
+
+          {/* Status banner */}
+          <div style={{ ...card, marginBottom: 24, display: "flex", alignItems: "center", gap: 16, borderColor: hasWorkflows ? "var(--warning)" : "var(--border)" }}>
+            <div style={{ fontSize: 32 }}>{hasWorkflows ? "⏳" : "⚙️"}</div>
+            <div>
+              <div style={{ fontFamily: "var(--heading)", fontSize: 18, fontWeight: 700, color: "var(--text-h)", marginBottom: 4 }}>
+                {hasWorkflows ? "Workflows Found — No Runs Yet" : "No CI Pipeline Detected"}
+              </div>
+              <div style={{ color: "var(--text-muted)", fontSize: 13, lineHeight: 1.5 }}>
+                {hasWorkflows
+                  ? "GitHub Actions workflows exist in .github/workflows but haven't run yet, or RepoLens hasn't ingested any runs. Try resyncing below."
+                  : "No GitHub Actions workflows found. Add one to start tracking build status, test coverage, and flaky tests here."}
+              </div>
+            </div>
+          </div>
+
+          {/* Action row */}
+          <div style={{ display: "flex", gap: 12, marginBottom: 32, flexWrap: "wrap" }}>
+            {actionsUrl && (
+              <a href={actionsUrl} target="_blank" rel="noreferrer" style={{
+                background: "var(--accent)", color: "#000", borderRadius: 4, padding: "8px 16px",
+                fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, textDecoration: "none", letterSpacing: "0.05em",
+              }}>
+                VIEW ACTIONS TAB →
+              </a>
+            )}
+            <button
+              onClick={triggerResync}
+              disabled={resyncing || resyncDone}
+              style={{
+                background: "transparent", border: "1px solid var(--border-bright)", color: resyncDone ? "var(--accent)" : "var(--text)",
+                borderRadius: 4, padding: "8px 16px", fontFamily: "var(--mono)", fontSize: 12, cursor: resyncing || resyncDone ? "default" : "pointer",
+                letterSpacing: "0.05em", opacity: resyncing ? 0.6 : 1,
+              }}
+            >
+              {resyncDone ? "✓ RESYNC QUEUED" : resyncing ? "RESYNCING…" : "↻ RESYNC CI DATA"}
+            </button>
+            <a href="https://docs.github.com/en/actions/quickstart" target="_blank" rel="noreferrer" style={{
+              background: "transparent", border: "1px solid var(--border)", color: "var(--text-muted)",
+              borderRadius: 4, padding: "8px 16px", fontFamily: "var(--mono)", fontSize: 12, textDecoration: "none", letterSpacing: "0.05em",
+            }}>
+              ACTIONS DOCS
+            </a>
+          </div>
+
+          {/* Quick-start templates */}
+          {!hasWorkflows && (
+            <div style={{ marginBottom: 32 }}>
+              <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.1em", marginBottom: 14 }}>
+                QUICK-START TEMPLATES
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                {YAML_TEMPLATES.map((t, i) => (
+                  <button key={t.lang} onClick={() => setActiveTemplate(i)} style={{
+                    background: activeTemplate === i ? "var(--accent-bg)" : "transparent",
+                    border: `1px solid ${activeTemplate === i ? "var(--accent-border)" : "var(--border)"}`,
+                    color: activeTemplate === i ? "var(--accent)" : "var(--text-muted)",
+                    borderRadius: 4, padding: "5px 14px", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer",
+                  }}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ position: "relative" }}>
+                <pre style={{
+                  background: "var(--code-bg)", border: "1px solid var(--border)", borderRadius: 6,
+                  padding: "16px 16px 16px 16px", fontFamily: "var(--mono)", fontSize: 12,
+                  color: "var(--text)", margin: 0, overflow: "auto", lineHeight: 1.7,
+                }}>
+                  {YAML_TEMPLATES[activeTemplate].yaml}
+                </pre>
+                <button
+                  onClick={() => copyYaml(YAML_TEMPLATES[activeTemplate].yaml, YAML_TEMPLATES[activeTemplate].lang)}
+                  style={{
+                    position: "absolute", top: 10, right: 10, background: "var(--surface)",
+                    border: "1px solid var(--border-bright)", color: copiedLang === YAML_TEMPLATES[activeTemplate].lang ? "var(--accent)" : "var(--text-muted)",
+                    borderRadius: 4, padding: "4px 10px", fontFamily: "var(--mono)", fontSize: 11, cursor: "pointer",
+                  }}
+                >
+                  {copiedLang === YAML_TEMPLATES[activeTemplate].lang ? "✓ COPIED" : "COPY"}
+                </button>
+              </div>
+              <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginTop: 8 }}>
+                Save to <span style={{ color: "var(--accent)" }}>.github/workflows/ci.yml</span> and push to trigger first run.
+              </div>
+            </div>
+          )}
+
+          {/* Ghost preview of what you'd see */}
+          <div>
+            <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.1em", marginBottom: 14 }}>
+              WHAT YOU'LL SEE HERE
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 12, opacity: 0.35 }}>
+              {[["PIPELINE STATUS", "PASSED ✓"], ["TOTAL DURATION", "2m 34s"], ["TEST COVERAGE", "82.4%"]].map(([label, val]) => (
+                <div key={label} style={{ ...card }}>
+                  <div style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 10, letterSpacing: "0.08em" }}>{label}</div>
+                  <div style={{ color: "var(--text-h)", fontFamily: "var(--mono)", fontSize: 20, fontWeight: 700 }}>{val}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, opacity: 0.35 }}>
+              {[["Unit Tests", "47/47 pass"], ["Integration Tests", "12/12 pass"]].map(([label, pass]) => (
+                <div key={label} style={{ ...card }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "var(--text-h)", fontWeight: 600, fontSize: 14 }}>{label}</span>
+                    <span style={{ background: "var(--accent-bg)", border: "1px solid var(--accent-border)", color: "var(--accent)", borderRadius: 3, padding: "2px 8px", fontFamily: "var(--mono)", fontSize: 11 }}>{pass}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      </Layout>
+    );
+  }
 
   return (
     <Layout activeNav="ci" repoId={repoId}>
@@ -284,20 +487,13 @@ export default function CITests() {
             transition: "max-height 0.2s ease",
             lineHeight: "1.7",
           }}>
-            {(stats?.job_log ?? [
-              "$ git checkout master",
-              "$ npm ci",
-              "added 1432 packages in 12.4s",
-              "$ npm run test:unit",
-              "PASS  src/__tests__/auth.test.ts",
-              "PASS  src/__tests__/api.test.ts",
-              "$ npm run test:integration",
-              "PASS  integration/repo.test.ts",
-            ]).map((line, i) => (
-              <div key={i} style={{ color: line.startsWith("$") ? "var(--accent)" : line.startsWith("FAIL") ? "var(--danger)" : "var(--text)" }}>
-                {line}
-              </div>
-            ))}
+            {(stats?.job_log ?? []).length === 0
+              ? <div style={{ color: "var(--text-muted)" }}>no log output</div>
+              : (stats?.job_log ?? []).map((line, i) => (
+                <div key={i} style={{ color: line.startsWith("$") ? "var(--accent)" : line.startsWith("FAIL") ? "var(--danger)" : "var(--text)" }}>
+                  {line}
+                </div>
+              ))}
           </div>
         </div>
 

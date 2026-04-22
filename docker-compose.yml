@@ -112,6 +112,20 @@ services:
       - redis
     restart: unless-stopped
 
+  classifier-worker:
+    build: ./classifier-worker
+    container_name: repolens-classifier-worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+    volumes:
+      - ./classifier-worker:/app
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
   frontend:
     build: ./frontend
     container_name: repolens-frontend

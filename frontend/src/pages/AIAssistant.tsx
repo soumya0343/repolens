@@ -33,9 +33,9 @@ interface AIResponse {
 }
 
 const QUICK_ACTIONS = [
-  "_SCAN DEPENDENCIES",
-  "_EXPLAIN ARCHITECTURE",
-  "_GENERATE UNIT TESTS",
+  "SCAN DEPENDENCIES",
+  "EXPLAIN ARCHITECTURE",
+  "GENERATE UNIT TESTS",
 ];
 
 function sessionId() {
@@ -300,7 +300,7 @@ export default function AIAssistant() {
           {QUICK_ACTIONS.map(action => (
             <button
               key={action}
-              onClick={() => send(action.replace(/^_/, ""))}
+              onClick={() => send(action)}
               style={{
                 background: "transparent",
                 border: "1px solid var(--border-bright)",

@@ -3,5 +3,6 @@ redis
 sqlalchemy
 asyncpg
 httpx
-openai
+google-genai
+groq>=0.9.0
 python-dotenv

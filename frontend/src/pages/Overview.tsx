@@ -30,11 +30,14 @@ interface PRData {
   predicted_risk_score?: number;
 }
 
+interface DoraMetric { value: number | null; rating: string; label: string; reason?: string | null }
 interface DoraData {
-  deployment_frequency: { value: number; rating: string; label: string };
-  lead_time_for_changes: { value: number; rating: string; label: string };
-  change_failure_rate: { value: number; rating: string; label: string };
-  time_to_restore: { value: number | null; rating: string; label: string };
+  has_data: boolean;
+  window_days: number;
+  deployment_frequency: DoraMetric;
+  lead_time_for_changes: DoraMetric;
+  change_failure_rate: DoraMetric;
+  time_to_restore: DoraMetric;
 }
 
 interface FlakyTest { ci_run_id: string; run_name: string; flakiness_prob: number; conclusion: string }
@@ -667,28 +670,41 @@ const Overview: React.FC = () => {
 
               {/* DORA Snapshot */}
               <Card>
-                <div style={{ fontFamily: 'var(--sans)', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '1rem' }}>
-                  DORA SNAPSHOT
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <div style={{ fontFamily: 'var(--sans)', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-h)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                    DORA SNAPSHOT
+                  </div>
+                  {dora && (
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: '0.65rem', color: 'var(--text-muted)', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.15rem 0.45rem' }}>
+                      {dora.window_days}d window
+                    </span>
+                  )}
                 </div>
                 {dora ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
                     {([
-                      { label: 'Deploy Freq',    value: `${dora.deployment_frequency.value ?? 0} /day` },
-                      { label: 'Lead Time',      value: `${dora.lead_time_for_changes.value ?? 0}h` },
-                      { label: 'Change Failure', value: dora.change_failure_rate.value != null ? `${dora.change_failure_rate.value}%` : '—' },
-                      { label: 'Time to Restore', value: dora.time_to_restore.value != null ? `${dora.time_to_restore.value}h` : '—' },
-                    ] as const).map((row, i, arr) => (
+                      { label: 'Deploy Freq',    metric: dora.deployment_frequency,    fmt: (v: number) => `${v}/day` },
+                      { label: 'Lead Time',      metric: dora.lead_time_for_changes,   fmt: (v: number) => `${v}h` },
+                      { label: 'Change Failure', metric: dora.change_failure_rate,     fmt: (v: number) => `${v}%` },
+                      { label: 'Time to Restore', metric: dora.time_to_restore,        fmt: (v: number) => `${v}h` },
+                    ]).map((row, i, arr) => (
                       <div key={row.label} style={{
-                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                         padding: '0.65rem 0',
                         borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none',
                       }}>
-                        <span style={{ fontFamily: 'var(--sans)', fontSize: '0.8rem', color: 'var(--text)' }}>
-                          {row.label}
-                        </span>
-                        <span style={{ fontFamily: 'var(--heading)', fontSize: '0.9rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '-0.01em' }}>
-                          {row.value}
-                        </span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontFamily: 'var(--sans)', fontSize: '0.8rem', color: 'var(--text)' }}>
+                            {row.label}
+                          </span>
+                          <span style={{ fontFamily: 'var(--heading)', fontSize: '0.9rem', fontWeight: 700, color: row.metric.value != null ? 'var(--accent)' : 'var(--text-muted)', letterSpacing: '-0.01em' }}>
+                            {row.metric.value != null ? row.fmt(row.metric.value) : '—'}
+                          </span>
+                        </div>
+                        {row.metric.value == null && row.metric.reason && (
+                          <div style={{ fontFamily: 'var(--mono)', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.2rem', letterSpacing: '0.03em' }}>
+                            // {row.metric.reason}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

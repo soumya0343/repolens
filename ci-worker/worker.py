@@ -1,8 +1,25 @@
 import asyncio
 import os
 import httpx
+from arq import cron
 from ci_client import fetch_workflow_runs, download_run_logs
 from test_pulse import TestPulse
+
+INTERNAL_API_KEY = os.getenv("REPOLENS_API_KEY", "internal_key")
+
+async def scheduled_ci_refresh(ctx):
+    """Hourly cron: enqueue CI backfill for all repos via internal API."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "http://api:8000/internal/ci_refresh_all",
+                headers={"x-internal-key": INTERNAL_API_KEY},
+                timeout=30,
+            )
+            data = r.json()
+            print(f"Scheduled CI refresh: enqueued {data.get('enqueued', '?')} repos")
+    except Exception as e:
+        print(f"Scheduled CI refresh failed: {e}")
 
 async def run_ci_backfill(ctx, repo_id: str, owner: str, name: str, github_token: str):
     """
@@ -44,6 +61,8 @@ async def run_ci_backfill(ctx, repo_id: str, owner: str, name: str, github_token
                     'name': run.get("name", "CI"),
                     'event': run.get("event"),
                     'head_branch': run.get("head_branch"),
+                    'created_at': run.get("created_at"),
+                    'updated_at': run.get("updated_at"),
                 })
         except Exception as e:
             print(f"  Run {run.get('id')} failed, skipping: {e}")
@@ -62,7 +81,10 @@ async def shutdown(ctx):
     print("CI Worker shutting down...")
 
 class WorkerSettings:
-    functions = [run_ci_backfill]
+    functions = [run_ci_backfill, scheduled_ci_refresh]
+    cron_jobs = [
+        cron(scheduled_ci_refresh, hour=None, minute=0),  # every hour on the hour
+    ]
     on_startup = startup
     on_shutdown = shutdown
     queue_name = os.getenv('CI_QUEUE', 'arq:ci')

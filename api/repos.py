@@ -703,6 +703,28 @@ async def get_repo_releases(
         raise HTTPException(status_code=500, detail=f"DORA metrics failed: {e}")
 
 
+@router.get("/{repo_id}/ci/workflow-check")
+async def check_ci_workflows(
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if repo has GitHub Actions workflow files."""
+    repo = await _require_repo_access(repo_id, user, db)
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{repo.owner}/{repo.name}/contents/.github/workflows",
+                headers={"Authorization": f"Bearer {user.github_token}", "Accept": "application/vnd.github+json"},
+                timeout=8,
+            )
+        has_workflows = r.status_code == 200 and bool(r.json())
+    except Exception:
+        has_workflows = False
+    return {"has_workflows": has_workflows, "owner": repo.owner, "name": repo.name}
+
+
 @router.get("/{repo_id}/ci/stats")
 async def get_ci_stats(
     repo_id: str,
@@ -720,24 +742,7 @@ async def get_ci_stats(
     )
     latest = latest_result.scalars().first()
     if not latest:
-        return {
-            "pipeline_status": "unknown",
-            "total_duration_seconds": None,
-            "test_coverage": None,
-            "coverage_delta": None,
-            "unit_tests_passed": 0,
-            "unit_tests_total": 0,
-            "unit_duration_seconds": None,
-            "unit_flaky_count": 0,
-            "integration_tests_passed": 0,
-            "integration_tests_total": 0,
-            "integration_duration_seconds": None,
-            "integration_failures": 0,
-            "branch": repo.default_branch,
-            "head_sha": "",
-            "run_started_at": None,
-            "job_log": [],
-        }
+        raise HTTPException(status_code=404, detail="No CI runs found for this repository")
 
     analysis = latest.analysis_results or {}
     clusters = analysis.get("clusters") or []

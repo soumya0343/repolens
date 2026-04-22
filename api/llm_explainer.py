@@ -45,17 +45,41 @@ def _cache_key(prefix: str, data: str) -> str:
     return f"llm:{prefix}:{h}"
 
 
+def _gemini_keys() -> list[str]:
+    return [v.strip() for s in ["", "_2", "_3"] if (v := os.getenv(f"GEMINI_API_KEY{s}", ""))]
+
+
 def _make_model(system_instruction: str):
     if not _HAS_GEMINI:
         return None
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    keys = _gemini_keys()
+    if not keys:
         return None
-    genai.configure(api_key=api_key)
+    genai.configure(api_key=keys[0])
     return genai.GenerativeModel(
         model_name="gemini-1.5-flash",
         system_instruction=system_instruction,
     )
+
+
+async def _generate_with_fallback(system_instruction: str, prompt: str) -> str | None:
+    """Try each Gemini key in order, rotate on quota errors."""
+    if not _HAS_GEMINI:
+        return None
+    for key in _gemini_keys():
+        try:
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=system_instruction,
+            )
+            resp = await model.generate_content_async(prompt)
+            return resp.text
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower():
+                continue
+            raise
+    return None
 
 
 class LLMExplainer:
@@ -98,10 +122,6 @@ class LLMExplainer:
         if cached:
             return cached
 
-        model = _make_model(EXPLAIN_SYSTEM)
-        if model is None:
-            return self._fallback_explain(repo_name, pr_details, risk_data)
-
         user_prompt = f"""Repository: {repo_name}
 PR Title: {pr_details.get('title', 'N/A')}
 Changed files: {', '.join(pr_details.get('files', []))}
@@ -125,9 +145,10 @@ Return JSON:
 }}"""
 
         try:
-            response = await model.generate_content_async(user_prompt)
-            text = response.text.strip()
-            # Strip markdown fences if model adds them despite instructions
+            text = await _generate_with_fallback(EXPLAIN_SYSTEM, user_prompt)
+            if text is None:
+                return self._fallback_explain(repo_name, pr_details, risk_data)
+            text = text.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
@@ -135,7 +156,6 @@ Return JSON:
             result = json.loads(text)
             await self._cache_set(key, result)
         except Exception as e:
-            # Do not cache errors — a transient failure should not poison the cache for 30 days
             return {"error": "Unable to generate risk explanation.", "_error": str(e)}
 
         return result
@@ -148,9 +168,6 @@ Return JSON:
         if cached:
             return cached.get("policy", "")
 
-        model = _make_model(ARCH_POLICY_SYSTEM)
-        if model is None:
-            return None
         if not violations:
             return None
 
@@ -164,8 +181,10 @@ Generate a Rego policy JSON with this schema:
 }}"""
 
         try:
-            response = await model.generate_content_async(user_prompt)
-            text = response.text.strip()
+            text = await _generate_with_fallback(ARCH_POLICY_SYSTEM, user_prompt)
+            if text is None:
+                return None
+            text = text.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
@@ -173,8 +192,7 @@ Generate a Rego policy JSON with this schema:
             result = json.loads(text)
             await self._cache_set(key, result)
             return result.get("policy", "")
-        except Exception as e:
-            # Do not cache errors
+        except Exception:
             return None
 
     async def suggest_refactoring(self, issues: List, file_content: str = "") -> Dict:
@@ -191,9 +209,6 @@ Generate a Rego policy JSON with this schema:
         if cached:
             return cached
 
-        model = _make_model(REFACTOR_SYSTEM)
-        if model is None:
-            return {"error": "Unable to generate refactoring suggestions: GEMINI_API_KEY not configured."}
         if not issues:
             return {"error": "Unable to generate refactoring suggestions: no issues provided."}
 
@@ -215,8 +230,10 @@ Return JSON:
 }}"""
 
         try:
-            response = await model.generate_content_async(user_prompt)
-            text = response.text.strip()
+            text = await _generate_with_fallback(REFACTOR_SYSTEM, user_prompt)
+            if text is None:
+                return {"error": "Unable to generate refactoring suggestions: no API keys available."}
+            text = text.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
@@ -224,7 +241,6 @@ Return JSON:
             result = json.loads(text)
             await self._cache_set(key, result)
         except Exception as e:
-            # Do not cache errors
             return {"error": "Unable to generate refactoring suggestions.", "_error": str(e)}
 
         return result
@@ -239,10 +255,6 @@ Return JSON:
         if cached:
             return cached
 
-        model = _make_model("Classify commit messages. Return only valid JSON array.")
-        if model is None:
-            return [{"sha": c.get("sha"), "category": None} for c in commits]
-
         batch_prompt = f"""Classify each commit message into exactly one category:
 feature, bugfix, hotfix, refactor, chore, test, docs
 
@@ -252,8 +264,10 @@ Commits:
 {json.dumps([{{"sha": c.get("sha", ""), "message": c.get("message", "")}} for c in commits[:20]], indent=2)}"""
 
         try:
-            response = await model.generate_content_async(batch_prompt)
-            text = response.text.strip()
+            text = await _generate_with_fallback("Classify commit messages. Return only valid JSON array.", batch_prompt)
+            if text is None:
+                return [{"sha": c.get("sha"), "category": None} for c in commits]
+            text = text.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):

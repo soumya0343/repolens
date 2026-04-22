@@ -366,8 +366,8 @@ async def chat(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found or access denied")
 
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
+    groq_keys = [v.strip() for s in ["", "_2", "_3"] if (v := os.getenv(f"GROQ_API_KEY{s}", ""))]
+    if not groq_keys:
         return {
             "response": "LLM chat requires GROQ_API_KEY to be set.",
             "history": body.history,
@@ -375,31 +375,56 @@ async def chat(
 
     try:
         from groq import AsyncGroq
-        client = AsyncGroq(api_key=groq_api_key)
     except ImportError:
         return {
             "response": "groq package is not installed. Run: pip install groq",
             "history": body.history,
         }
 
+    # Pick first key; rotate to next on rate-limit errors inside the loop
+    _groq_key_idx = 0
+    client = AsyncGroq(api_key=groq_keys[_groq_key_idx])
+
     system_msg = {
         "role": "system",
         "content": f"{CHAT_SYSTEM}\n\nRepository: {repo.owner}/{repo.name} (id: {repo_id})",
     }
 
-    # Serialize history — strip any non-serializable assistant message objects
+    # Serialize history — strip non-serializable objects, keep last 12 messages to cap tokens
     messages = []
     for m in body.history:
         if isinstance(m, dict):
             messages.append(m)
+    messages = messages[-12:]
 
     messages.append({"role": "user", "content": body.message})
 
+    def _cap_tool_output(output: Any, max_chars: int = 3000) -> str:
+        """Serialize tool output and truncate if too large to avoid token bloat."""
+        s = json.dumps(output)
+        if len(s) > max_chars:
+            s = s[:max_chars] + "... [truncated]"
+        return s
+
+    async def _groq_create(**kwargs):
+        """Call Groq, rotating to next key on rate-limit (429)."""
+        nonlocal _groq_key_idx, client
+        for attempt in range(len(groq_keys)):
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except Exception as e:
+                if "429" in str(e) and attempt < len(groq_keys) - 1:
+                    _groq_key_idx = (_groq_key_idx + 1) % len(groq_keys)
+                    client = AsyncGroq(api_key=groq_keys[_groq_key_idx])
+                else:
+                    raise
+
     try:
         # First call — may trigger tool use
-        response = await client.chat.completions.create(
+        response = await _groq_create(
             model="llama-3.3-70b-versatile",
             max_tokens=2048,
+            timeout=30,
             messages=[system_msg] + messages,
             tools=TOOLS,
             tool_choice="auto",
@@ -434,16 +459,20 @@ async def chat(
                     inputs = json.loads(tc.function.arguments) if tc.function.arguments else {}
                 except json.JSONDecodeError:
                     inputs = {}
-                tool_output = await _run_tool(tc.function.name, inputs, repo_id, db)
+                try:
+                    tool_output = await _run_tool(tc.function.name, inputs, repo_id, db)
+                except Exception as tool_exc:
+                    tool_output = {"error": str(tool_exc)}
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": json.dumps(tool_output),
+                    "content": _cap_tool_output(tool_output),
                 })
 
-            response = await client.chat.completions.create(
+            response = await _groq_create(
                 model="llama-3.3-70b-versatile",
                 max_tokens=2048,
+                timeout=30,
                 messages=[system_msg] + messages,
                 tools=TOOLS,
                 tool_choice="auto",

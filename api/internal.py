@@ -320,6 +320,48 @@ async def trigger_build_graph(repo_id: str, db: AsyncSession = Depends(get_db)):
         return {"status": "error", "detail": str(e)}
 
 
+@router.post('/ci_refresh_all', dependencies=[Depends(_verify_internal)])
+async def ci_refresh_all(db: AsyncSession = Depends(get_db)):
+    """Enqueue CI backfill for every connected repo — called by CI worker cron."""
+    from worker_pool import get_redis_pool, CI_QUEUE
+    from models import User
+
+    result = await db.execute(
+        select(Repo.id, Repo.owner, Repo.name, UserRepo.user_id)
+        .join(UserRepo, UserRepo.repo_id == Repo.id)
+    )
+    rows = result.all()
+
+    # Collect one token per repo (first user with access)
+    repo_tokens: dict = {}
+    for repo_id, owner, name, user_id in rows:
+        key = str(repo_id)
+        if key not in repo_tokens:
+            repo_tokens[key] = (owner, name, user_id)
+
+    if not repo_tokens:
+        return {"enqueued": 0}
+
+    # Fetch tokens for all user_ids in one query
+    user_ids = list({v[2] for v in repo_tokens.values()})
+    users_result = await db.execute(select(User.id, User.github_token).where(User.id.in_(user_ids)))
+    token_map = {str(row[0]): row[1] for row in users_result.all()}
+
+    redis_pool = await get_redis_pool()
+    enqueued = 0
+    for repo_id_str, (owner, name, user_id) in repo_tokens.items():
+        token = token_map.get(str(user_id))
+        if not token:
+            continue
+        await redis_pool.enqueue_job(
+            'run_ci_backfill', repo_id_str, owner, name, token,
+            _queue_name=CI_QUEUE,
+        )
+        enqueued += 1
+
+    return {"enqueued": enqueued}
+
+
 @router.post('/refresh_risk/{repo_id}', dependencies=[Depends(_verify_internal)])
 async def refresh_risk_score(repo_id: str, db: AsyncSession = Depends(get_db)):
     """Compute and persist a fresh risk score — called by ingestor after backfill completes."""

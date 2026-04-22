@@ -18,7 +18,8 @@ interface FileData {
 }
 interface PRData { id: string; number: number; title: string; state: string; author_login: string; created_at: string; merged_at?: string; predicted_risk_score?: number; repo_id: string }
 interface RiskData { score: number; label: string; breakdown: Record<string, number>; weights?: Record<string, number> }
-interface DoraData { deployment_frequency: { value: number; rating: string; label: string }; lead_time_for_changes: { value: number; rating: string; label: string }; change_failure_rate: { value: number; rating: string; label: string }; time_to_restore: { value: number | null; rating: string; label: string } }
+interface DoraMetric { value: number | null; rating: string; label: string; reason?: string | null }
+interface DoraData { has_data: boolean; window_days: number; deployment_frequency: DoraMetric; lead_time_for_changes: DoraMetric; change_failure_rate: DoraMetric; time_to_restore: DoraMetric }
 interface FlakyTest { ci_run_id: string; run_name: string; head_sha: string; conclusion: string; flakiness_prob: number; total_errors: number; failure_signatures: { template: string; count: number }[]; created_at: string }
 interface TeamNode { id: string; commit_count: number; betweenness?: number }
 interface TeamEdge { source: string; target: string; weight: number }
@@ -78,7 +79,7 @@ const RiskBar: React.FC<{ label: string; value: number; max?: number }> = ({ lab
   </div>
 );
 
-const DoraCard: React.FC<{ title: string; value: number | null; unit: string; rating: string; label: string }> = ({ title, value, unit, rating, label }) => (
+const DoraCard: React.FC<{ title: string; value: number | null; unit: string; rating: string; label: string; reason?: string | null }> = ({ title, value, unit, rating, label, reason }) => (
   <div className="bg-white rounded-lg shadow p-5">
     <p className="text-sm text-gray-500">{title}</p>
     <p className="text-2xl font-bold text-gray-900 mt-1">
@@ -88,6 +89,7 @@ const DoraCard: React.FC<{ title: string; value: number | null; unit: string; ra
       {rating.toUpperCase()}
     </span>
     <p className="text-xs text-gray-400 mt-1">{label}</p>
+    {reason && <p className="text-xs text-amber-600 mt-1 italic">{reason}</p>}
   </div>
 );
 
@@ -646,14 +648,28 @@ const Dashboard: React.FC = () => {
                 {!flakyData.length && <p className="text-gray-400 text-sm">No flaky tests detected.</p>}
               </div>
               <div className="bg-white rounded-lg shadow p-5">
-                <h3 className="text-sm font-medium text-gray-500 mb-3">DORA Snapshot</h3>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-gray-500">DORA Snapshot</h3>
+                  {doraData && <span className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">Last {doraData.window_days}d</span>}
+                </div>
                 {doraData ? (
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between"><span>Deploy Freq</span><span className={ratingColor(doraData.deployment_frequency.rating)}>{doraData.deployment_frequency.value}/day</span></div>
-                    <div className="flex justify-between"><span>Lead Time</span><span className={ratingColor(doraData.lead_time_for_changes.rating)}>{doraData.lead_time_for_changes.value}h</span></div>
-                    <div className="flex justify-between"><span>Change Failure</span><span className={ratingColor(doraData.change_failure_rate.rating)}>{doraData.change_failure_rate.value}%</span></div>
+                    {[
+                      { label: 'Deploy Freq', m: doraData.deployment_frequency, fmt: (v: number) => `${v}/day` },
+                      { label: 'Lead Time',   m: doraData.lead_time_for_changes, fmt: (v: number) => `${v}h` },
+                      { label: 'CI Failure',  m: doraData.change_failure_rate,   fmt: (v: number) => `${v}%` },
+                      { label: 'MTTR',        m: doraData.time_to_restore,       fmt: (v: number) => `${v}h` },
+                    ].map(({ label, m, fmt }) => (
+                      <div key={label}>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">{label}</span>
+                          <span className={ratingColor(m.rating)}>{m.value != null ? fmt(m.value) : '—'}</span>
+                        </div>
+                        {m.reason && <p className="text-xs text-amber-600 mt-0.5 leading-tight">{m.reason}</p>}
+                      </div>
+                    ))}
                   </div>
-                ) : <p className="text-gray-400 text-sm">No release data yet.</p>}
+                ) : <p className="text-gray-400 text-sm">No data yet.</p>}
               </div>
             </div>
           </div>
@@ -780,13 +796,23 @@ const Dashboard: React.FC = () => {
         {/* ── Releases / DORA ───────────────────────────────────────────── */}
         {activeTab === 'releases' && (
           <div className="space-y-6">
-            {doraData ? (
+            {doraData && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm bg-blue-50 text-blue-700 border border-blue-200 px-3 py-1 rounded-full font-medium">
+                  Last {doraData.window_days} days
+                </span>
+                {doraData.window_days > 30 && (
+                  <span className="text-xs text-amber-600">No activity in last 30 days — window expanded to {doraData.window_days}d to find data</span>
+                )}
+              </div>
+            )}
+            {doraData && doraData.has_data ? (
               <>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <DoraCard title="Deployment Frequency"  value={doraData.deployment_frequency.value}  unit="/day" rating={doraData.deployment_frequency.rating}  label={doraData.deployment_frequency.label} />
-                  <DoraCard title="Lead Time for Changes" value={doraData.lead_time_for_changes.value} unit="hrs"  rating={doraData.lead_time_for_changes.rating} label={doraData.lead_time_for_changes.label} />
-                  <DoraCard title="Change Failure Rate"   value={doraData.change_failure_rate.value}   unit="%"    rating={doraData.change_failure_rate.rating}   label={doraData.change_failure_rate.label} />
-                  <DoraCard title="Mean Time to Restore"  value={doraData.time_to_restore.value}       unit="hrs"  rating={doraData.time_to_restore.rating}       label={doraData.time_to_restore.label} />
+                  <DoraCard title="Deployment Frequency"  value={doraData.deployment_frequency.value}  unit="/day" rating={doraData.deployment_frequency.rating}  label={doraData.deployment_frequency.label} reason={doraData.deployment_frequency.reason} />
+                  <DoraCard title="Lead Time for Changes" value={doraData.lead_time_for_changes.value} unit="hrs"  rating={doraData.lead_time_for_changes.rating} label={doraData.lead_time_for_changes.label} reason={doraData.lead_time_for_changes.reason} />
+                  <DoraCard title="Change Failure Rate"   value={doraData.change_failure_rate.value}   unit="%"    rating={doraData.change_failure_rate.rating}   label={doraData.change_failure_rate.label} reason={doraData.change_failure_rate.reason} />
+                  <DoraCard title="Mean Time to Restore"  value={doraData.time_to_restore.value}       unit="hrs"  rating={doraData.time_to_restore.rating}       label={doraData.time_to_restore.label} reason={doraData.time_to_restore.reason} />
                 </div>
                 <div className="bg-white rounded-lg shadow p-6">
                   <h3 className="text-base font-semibold text-gray-900 mb-4">DORA Rating Guide</h3>
@@ -803,7 +829,25 @@ const Dashboard: React.FC = () => {
                 </div>
               </>
             ) : (
-              <div className="bg-white rounded-lg shadow p-12 text-center text-gray-400">No release data. Run a backfill to compute DORA metrics.</div>
+              <div className="bg-white rounded-lg shadow p-8">
+                <p className="text-gray-500 font-medium mb-4">No CI or PR data found in this window</p>
+                <div className="space-y-2">
+                  {doraData && [
+                    { title: 'Deployment Frequency', m: doraData.deployment_frequency },
+                    { title: 'Lead Time for Changes', m: doraData.lead_time_for_changes },
+                    { title: 'Change Failure Rate', m: doraData.change_failure_rate },
+                    { title: 'Mean Time to Restore', m: doraData.time_to_restore },
+                  ].filter(({ m }) => m.reason).map(({ title, m }) => (
+                    <div key={title} className="flex gap-2 text-sm">
+                      <span className="text-gray-500 font-medium min-w-[180px]">{title}:</span>
+                      <span className="text-amber-600">{m.reason}</span>
+                    </div>
+                  ))}
+                  {doraData && ![doraData.deployment_frequency, doraData.lead_time_for_changes, doraData.change_failure_rate, doraData.time_to_restore].some(m => m.reason) && (
+                    <p className="text-gray-400 text-sm">Run a backfill or push a commit to populate DORA metrics.</p>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         )}
