@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run secret scanner tests
-        run: python -m pytest test_secret_scanner.py -v
+        run: python -m unittest test_secret_scanner -v
 
   classifier-worker-tests:
     runs-on: ubuntu-latest
@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run classifier worker tests
-        run: python -m pytest test_worker.py -v
+        run: python -m unittest test_worker -v
 
   arch-worker-tests:
     runs-on: ubuntu-latest
@@ -49,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run arch worker tests
-        run: python -m pytest test_worker.py -v
+        run: python -m unittest test_worker -v
 
   frontend-typecheck:
     runs-on: ubuntu-latest
