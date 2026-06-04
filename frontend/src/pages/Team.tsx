@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { API_BASE_URL } from "../lib/apiConfig";
-import { authHdr, apiFetch } from "../lib/auth";
+import { apiFetch } from "../lib/auth";
 import Tooltip from "../components/Tooltip";
 
 interface TeamNode { id: string; commit_count: number; betweenness?: number }

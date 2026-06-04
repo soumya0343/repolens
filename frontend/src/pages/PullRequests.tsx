@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
-import { authHdr, apiFetch } from '../lib/auth';
+import { apiFetch } from '../lib/auth';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
 

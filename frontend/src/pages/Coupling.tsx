@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
-import { authHdr, apiFetch } from '../lib/auth';
+import { apiFetch } from '../lib/auth';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
 import { toast } from 'sonner';
@@ -224,7 +224,7 @@ const Coupling: React.FC = () => {
           <div style={{ fontFamily: 'var(--heading)', fontSize: 'clamp(2.8rem, 6vw, 4.5rem)', fontWeight: 700, color: 'var(--text-h)', textTransform: 'uppercase', letterSpacing: '-0.02em' }}>
             FILE_COUPLING
           </div>
-          <div style={{ fontFamily: 'var(--sans)', fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.75rem', maxWidth: 560, lineHeight: 1.5, lineHeight: 1.5 }}>
+          <div style={{ fontFamily: 'var(--sans)', fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.75rem', maxWidth: 560, lineHeight: 1.5 }}>
             Files that are frequently changed together in the same commit. When two files are tightly coupled, a bug fix or feature in one almost always requires a change in the other — a hidden dependency worth knowing about.
           </div>
         </div>
