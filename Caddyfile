@@ -1,0 +1,11 @@
+# RepoLens reverse proxy — automatic HTTPS via Let's Encrypt.
+# Replace the hostname below with your real domain (e.g. a free DuckDNS subdomain
+# like repolens.duckdns.org, or any domain whose A record points at this VPS).
+#
+# Caddy fronts only the frontend container. The frontend's own nginx
+# (frontend/nginx.conf) already proxies /api/ and /ws/ to api:8000.
+
+your-domain.duckdns.org {
+    encode gzip
+    reverse_proxy frontend:80
+}

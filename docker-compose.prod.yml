@@ -143,10 +143,22 @@ services:
       args:
         VITE_API_URL: /api
     container_name: repolens-frontend
-    ports:
-      - "80:80"
     depends_on:
       - api
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: repolens-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
     restart: unless-stopped
 
   bot:
@@ -160,3 +172,5 @@ volumes:
   postgres_data:
   redis_data:
   neo4j_data:
+  caddy_data:
+  caddy_config:
