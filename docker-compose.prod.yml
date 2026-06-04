@@ -20,12 +20,15 @@ services:
   redis:
     image: redis:7-alpine
     container_name: repolens-redis
-    command: redis-server --requirepass ${REDIS_PASSWORD}
+    # No --requirepass: redis is internal-only (no published port, firewalled).
+    # The app code does not pass REDIS_PASSWORD on its connections, so enabling
+    # auth here breaks every worker/API redis client. Keep it unauthenticated
+    # on the private docker network.
     volumes:
       - redis_data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
