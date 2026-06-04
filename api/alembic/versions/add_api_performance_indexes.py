@@ -22,6 +22,13 @@ def _indexes(table_name: str) -> set[str]:
 
 
 def _create_index(name: str, table_name: str, columns: list[str]) -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    # Some tables are created by the app's create_all at startup rather than a
+    # migration; skip indexing tables that don't exist yet so a fresh-DB
+    # `alembic upgrade head` is order-independent.
+    if not inspector.has_table(table_name):
+        return
     if name not in _indexes(table_name):
         op.create_index(name, table_name, columns, unique=False)
 
