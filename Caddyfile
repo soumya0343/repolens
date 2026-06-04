@@ -5,7 +5,7 @@
 # Caddy fronts only the frontend container. The frontend's own nginx
 # (frontend/nginx.conf) already proxies /api/ and /ws/ to api:8000.
 
-your-domain.duckdns.org {
+repolenss.duckdns.org {
     encode gzip
     reverse_proxy frontend:80
 }

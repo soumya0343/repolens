@@ -161,12 +161,14 @@ services:
       - frontend
     restart: unless-stopped
 
-  bot:
-    build: ./bot
-    container_name: repolens-bot
-    env_file:
-      - .env
-    restart: unless-stopped
+  # bot (GitHub App webhook listener) — deferred. Not built / no public ingress yet.
+  # See DEPLOY.md "Bot" section to enable later (needs Caddy /gh/webhook route + App creds).
+  # bot:
+  #   build: ./bot
+  #   container_name: repolens-bot
+  #   env_file:
+  #     - .env
+  #   restart: unless-stopped
 
 volumes:
   postgres_data:
