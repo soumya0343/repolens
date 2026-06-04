@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
+import { authHdr, apiFetch } from '../lib/auth';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
 import { toast } from 'sonner';
@@ -61,16 +62,6 @@ interface SecretFinding {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` });
-
-async function apiFetch<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url, { headers: authHdr() });
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-}
 
 function timeAgo(iso: string): string {
   const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -142,9 +133,11 @@ const Overview: React.FC = () => {
   const [flaky,        setFlaky]        = useState<FlakyTest[]>([]);
   const [history,      setHistory]      = useState<ScorePoint[]>([]);
   const [secrets,      setSecrets]      = useState<SecretFinding[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [backfilling,  setBackfilling]  = useState(false);
-  const [backfillMsg,  setBackfillMsg]  = useState<string | null>(null);
+  const [loading,        setLoading]        = useState(true);
+  const [backfilling,    setBackfilling]    = useState(false);
+  const [backfillMsg,    setBackfillMsg]    = useState<string | null>(null);
+  const [syncPolling,    setSyncPolling]    = useState(false);
+  const syncPollCount    = useRef(0);
 
   const loadAll = useCallback(async () => {
     if (!repoId) return;
@@ -177,12 +170,27 @@ const Overview: React.FC = () => {
     loadAll();
   }, [repoId, navigate, loadAll]);
 
-  // Poll every 30s while ingestion is in progress (synced_at is null)
+  // Poll every 30s while first-time ingestion running (synced_at null)
   useEffect(() => {
     if (loading || meta?.synced_at) return;
     const id = setInterval(loadAll, 30_000);
     return () => clearInterval(id);
   }, [loading, meta?.synced_at, loadAll]);
+
+  // Poll every 15s after manual backfill trigger — stop after 20 polls (~5 min)
+  useEffect(() => {
+    if (!syncPolling) return;
+    syncPollCount.current = 0;
+    const id = setInterval(async () => {
+      syncPollCount.current += 1;
+      await loadAll();
+      if (syncPollCount.current >= 20) {
+        setSyncPolling(false);
+        setBackfilling(false);
+      }
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [syncPolling, loadAll]);
 
   const triggerBackfill = async () => {
     if (!repoId) return;
@@ -191,16 +199,20 @@ const Overview: React.FC = () => {
       const r = await fetch(`${API_BASE_URL}/repos/${repoId}/backfill`, { method: 'POST', headers: authHdr() });
       if (r.ok) {
         setBackfillMsg('Backfill queued.');
-        toast.success('Backfill queued — data will update shortly.');
+        toast.success('Backfill queued — refreshing every 15s until complete.');
+        setSyncPolling(true);
+        // immediate first reload so UI reflects job started
+        await loadAll();
       } else {
         setBackfillMsg('Failed to trigger backfill.');
         toast.error('Failed to trigger backfill.');
+        setBackfilling(false);
       }
     } catch {
       setBackfillMsg('Error triggering backfill.');
       toast.error('Error triggering backfill. Check your connection.');
+      setBackfilling(false);
     }
-    finally { setBackfilling(false); }
   };
 
   const updateSecretStatus = async (findingId: string, status: string) => {
@@ -259,6 +271,21 @@ const Overview: React.FC = () => {
 
   return (
     <Layout activeNav="overview" repoId={repoId}>
+      {/* ── Loading progress bar ────────────────────────── */}
+      {(loading || syncPolling) && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, height: 2,
+          zIndex: 9999, background: 'var(--border)',
+          overflow: 'hidden',
+        }}>
+          <div style={{
+            height: '100%',
+            background: 'var(--accent)',
+            animation: 'progressSlide 1.4s ease-in-out infinite',
+          }} />
+        </div>
+      )}
+
       {/* ── Top bar ─────────────────────────────────────── */}
       <header style={{
         background: 'var(--surface)', borderBottom: '1px solid var(--border)',
@@ -309,6 +336,24 @@ const Overview: React.FC = () => {
 
       {/* ── Body ────────────────────────────────────────── */}
       <main style={{ flex: 1, padding: '2rem 2rem 3rem', overflowY: 'auto' }}>
+
+        {/* Sync-in-progress banner */}
+        {syncPolling && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '0.75rem',
+            background: 'var(--accent-bg)', border: '1px solid var(--accent)',
+            borderRadius: 3, padding: '0.6rem 1rem', marginBottom: '1.5rem',
+            fontFamily: 'var(--mono)', fontSize: '0.72rem', color: 'var(--accent)',
+            letterSpacing: '0.06em',
+          }}>
+            <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+            BACKFILL_RUNNING // refreshing every 15s — data will appear as it ingests
+            <button
+              onClick={() => { setSyncPolling(false); setBackfilling(false); setBackfillMsg(null); }}
+              style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1 }}
+            >✕</button>
+          </div>
+        )}
 
         {/* Hero heading */}
         <div style={{ marginBottom: '2rem', lineHeight: 0.88 }}>

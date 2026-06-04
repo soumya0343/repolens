@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { API_BASE_URL } from "../lib/apiConfig";
+import { authHdr } from "../lib/auth";
 import { toast } from "sonner";
-
-const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` });
 
 interface Finding {
   severity: "critical" | "warning" | "info";

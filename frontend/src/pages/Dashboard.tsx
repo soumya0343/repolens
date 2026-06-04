@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import * as d3 from 'd3';
 import { API_BASE_URL, WS_BASE_URL } from '../lib/apiConfig';
+import { authHdr, apiFetch } from '../lib/auth';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -46,15 +47,6 @@ const riskBg     = (s: number) => s >= 75 ? 'bg-red-100 text-red-800'    : s >= 
 const ratingColor = (r: string) => ({ elite: 'text-green-600', high: 'text-blue-600', medium: 'text-yellow-600', low: 'text-red-600', unknown: 'text-gray-400' }[r] ?? 'text-gray-400');
 const ratingBg    = (r: string) => ({ elite: 'bg-green-100 text-green-800', high: 'bg-blue-100 text-blue-800', medium: 'bg-yellow-100 text-yellow-800', low: 'bg-red-100 text-red-800', unknown: 'bg-gray-100 text-gray-600' }[r] ?? 'bg-gray-100 text-gray-600');
 
-const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` });
-
-async function apiFetch<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url, { headers: authHeaders() });
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-}
 
 // ── Sub-components ────────────────────────────────────────────────────────
 
@@ -416,7 +408,7 @@ const Dashboard: React.FC = () => {
     if (!repoId) return;
     setTriggeringBackfill(true); setBackfillMsg(null);
     try {
-      const r = await fetch(`${API_BASE_URL}/repos/${repoId}/backfill`, { method: 'POST', headers: authHeaders() });
+      const r = await fetch(`${API_BASE_URL}/repos/${repoId}/backfill`, { method: 'POST', headers: authHdr() });
       if (!r.ok) throw new Error((await r.json())?.detail || 'Failed');
       setBackfillMsg('Backfill queued.');
     } catch (e: unknown) {
@@ -430,7 +422,7 @@ const Dashboard: React.FC = () => {
     const normalized: Record<string, number> = {};
     for (const [k, v] of Object.entries(repoConfig)) normalized[k] = v / total;
     await fetch(`${API_BASE_URL}/repos/${repoId}`, {
-      method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      method: 'PATCH', headers: { ...authHdr(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ config: { weights_normalized: normalized } }),
     });
   };
@@ -444,7 +436,7 @@ const Dashboard: React.FC = () => {
     setPrDetail(detail); setPrDetailLoading(false);
     setPrExplainLoading(true);
     try {
-      const r = await fetch(`${API_BASE_URL}/prs/${pr.id}/explain`, { method: 'POST', headers: authHeaders() });
+      const r = await fetch(`${API_BASE_URL}/prs/${pr.id}/explain`, { method: 'POST', headers: authHdr() });
       if (r.ok) {
         const data = await r.json();
         setPrExplainData(typeof data === 'string' ? { summary: data } : data);
@@ -469,7 +461,7 @@ const Dashboard: React.FC = () => {
       const parsed = JSON.parse(archPolicy);
       setArchPolicySaving(true);
       await fetch(`${API_BASE_URL}/repos/${repoId}`, {
-        method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        method: 'PATCH', headers: { ...authHdr(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: { arch_policy: parsed } }),
       });
     } catch { setArchPolicyError('Invalid JSON. Fix syntax errors before saving.'); }
@@ -480,7 +472,7 @@ const Dashboard: React.FC = () => {
     if (!repoId) return;
     setPolicyGenerating(true);
     try {
-      const r = await fetch(`${API_BASE_URL}/repos/${repoId}/policy/generate`, { method: 'POST', headers: authHeaders() });
+      const r = await fetch(`${API_BASE_URL}/repos/${repoId}/policy/generate`, { method: 'POST', headers: authHdr() });
       if (r.ok) {
         const data = await r.json();
         setArchPolicy(typeof data.policy === 'string' ? data.policy : JSON.stringify(data.policy, null, 2));
@@ -493,7 +485,7 @@ const Dashboard: React.FC = () => {
     setNotifSaving(true);
     try {
       await fetch(`${API_BASE_URL}/repos/${repoId}`, {
-        method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        method: 'PATCH', headers: { ...authHdr(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: { block_threshold: blockThreshold, warn_only: warnOnly, llm_provider: llmProvider, ...(llmApiKey ? { llm_api_key: llmApiKey } : {}) } }),
       });
     } finally { setNotifSaving(false); }
@@ -505,7 +497,7 @@ const Dashboard: React.FC = () => {
     try {
       const parsed = JSON.parse(secretAllowlist);
       await fetch(`${API_BASE_URL}/repos/${repoId}`, {
-        method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        method: 'PATCH', headers: { ...authHdr(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: { secret_allowlist: parsed } }),
       });
     } catch {
@@ -520,7 +512,7 @@ const Dashboard: React.FC = () => {
     setChatHistory(newHistory); setChatInput(''); setChatLoading(true);
     try {
       const r = await fetch(`${API_BASE_URL}/repos/${repoId}/chat`, {
-        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        method: 'POST', headers: { ...authHdr(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: chatInput, history: newHistory.slice(-10).map(m => ({ role: m.role, content: m.content })) }),
       });
       const txt = r.ok ? (await r.json()).response || 'No response.' : 'Error: Could not get a response.';

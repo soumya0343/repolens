@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks, Query
+from pydantic import BaseModel
+from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, text
@@ -6,7 +8,10 @@ import httpx
 import jwt
 import os
 import datetime
+import logging
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 from database import get_db
 from models import User, Repo, UserRepo, Commit, PullRequest, PRComment, ArchAnalysis, CommitFile, CIRun, RepoScoreSnapshot, SecretFinding
@@ -99,27 +104,27 @@ async def _fetch_default_branch(token: str, owner: str, name: str) -> str:
         return resp.json()["default_branch"]
 
 
-@router.post("/")
-async def connect_repository(payload: dict, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Connect a new repository and trigger backfill"""
-    github_id = str(payload.get("github_id"))
-    owner = payload.get("owner")
-    name = payload.get("name")
+async def _fetch_repo_info(token: str, owner: str, name: str) -> dict:
+    """Fetch repo id + default_branch from GitHub in one call."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{name}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"},
+            timeout=15.0,
+        )
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Repository {owner}/{name} not found or not accessible")
+        resp.raise_for_status()
+        data = resp.json()
+        return {"github_id": str(data["id"]), "default_branch": data["default_branch"]}
 
-    if not github_id or not owner or not name:
-        raise HTTPException(status_code=400, detail="Missing repository details")
 
-    # Validate default_branch server-side — do not trust frontend payload
-    try:
-        default_branch = await _fetch_default_branch(user.github_token, owner, name)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Unable to verify repository with GitHub: {e}")
-
-    # Check if repo exists globally
+async def _connect_repo(github_id: str, owner: str, name: str, default_branch: str, user: User, db: AsyncSession) -> dict:
     result = await db.execute(select(Repo).where(Repo.github_id == github_id))
     repo = result.scalars().first()
+    is_new = repo is None
 
-    if not repo:
+    if is_new:
         repo = Repo(
             github_id=github_id,
             owner=owner,
@@ -131,26 +136,59 @@ async def connect_repository(payload: dict, user: User = Depends(get_current_use
         await db.commit()
         await db.refresh(repo)
 
-    # Link repo to user
     link_result = await db.execute(select(UserRepo).where(UserRepo.user_id == user.id, UserRepo.repo_id == repo.id))
     link = link_result.scalars().first()
-    
     if not link:
         link = UserRepo(user_id=user.id, repo_id=repo.id, role="admin")
         db.add(link)
         await db.commit()
 
-    # Dispatch ARQ job to start the backfill worker
-    redis_pool = await get_redis_pool()
-    await redis_pool.enqueue_job('run_backfill_job', str(repo.id), user.github_token, _queue_name=BACKFILL_QUEUE)
-    
-    # Also dispatch CI logs backfill
-    await redis_pool.enqueue_job('run_ci_backfill', str(repo.id), repo.owner, repo.name, user.github_token, _queue_name=CI_QUEUE)
-    
-    # Finally, dispatch Codebase Snapshot
-    await redis_pool.enqueue_job('run_arch_snapshot', str(repo.id), repo.owner, repo.name, user.github_token, repo.default_branch, _queue_name=ARCH_QUEUE)
+    if is_new:
+        redis_pool = await get_redis_pool()
+        await redis_pool.enqueue_job('run_backfill_job', str(repo.id), user.github_token, _queue_name=BACKFILL_QUEUE)
+        await redis_pool.enqueue_job('run_ci_backfill', str(repo.id), repo.owner, repo.name, user.github_token, _queue_name=CI_QUEUE)
+        await redis_pool.enqueue_job('run_arch_snapshot', str(repo.id), repo.owner, repo.name, user.github_token, repo.default_branch, _queue_name=ARCH_QUEUE)
+        return {"status": "syncing", "repo_id": str(repo.id), "message": "Backfill job enqueued"}
 
-    return {"status": "syncing", "repo_id": str(repo.id), "message": "Backfill job enqueued"}
+    return {"status": "already_connected", "repo_id": str(repo.id), "message": "Repository already synced"}
+
+
+@router.post("/")
+async def connect_repository(payload: dict, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    github_id = str(payload.get("github_id"))
+    owner = payload.get("owner")
+    name = payload.get("name")
+
+    if not github_id or not owner or not name:
+        raise HTTPException(status_code=400, detail="Missing repository details")
+
+    try:
+        default_branch = await _fetch_default_branch(user.github_token, owner, name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Unable to verify repository with GitHub: {e}")
+
+    return await _connect_repo(github_id, owner, name, default_branch, user, db)
+
+
+@router.post("/by-url")
+async def connect_by_url(payload: dict, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    import re
+    raw = (payload.get("url") or "").strip().rstrip("/")
+    m = re.search(r'(?:github\.com/)?([A-Za-z0-9_.\-]+)/([A-Za-z0-9_.\-]+?)(?:\.git)?$', raw)
+    if not m:
+        raise HTTPException(status_code=400, detail="Invalid GitHub URL — expected github.com/owner/repo")
+    owner, name = m.group(1), m.group(2)
+
+    try:
+        info = await _fetch_repo_info(user.github_token, owner, name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Unable to reach GitHub: {e}")
+
+    return await _connect_repo(info["github_id"], owner, name, info["default_branch"], user, db)
 
 
 @router.post("/{repo_id}/backfill")
@@ -271,9 +309,9 @@ def _serialize_secret_finding(finding: SecretFinding) -> dict:
         "fingerprint_hash": finding.fingerprint_hash,
         "status": finding.status,
         "message": finding.message,
-        "first_seen_at": finding.first_seen_at,
-        "last_seen_at": finding.last_seen_at,
-        "resolved_at": finding.resolved_at,
+        "first_seen_at": finding.first_seen_at.isoformat() if finding.first_seen_at else None,
+        "last_seen_at": finding.last_seen_at.isoformat() if finding.last_seen_at else None,
+        "resolved_at": finding.resolved_at.isoformat() if finding.resolved_at else None,
     }
 
 
@@ -351,8 +389,8 @@ async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(g
             fpath = v.get("file") or v.get("source_file") or ""
             if fpath:
                 violations_by_file[fpath].append(v)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("arch violations load failed for repo %s: %s", repo_id, e)
 
     # Load per-file bus-factor HHI once → dict keyed by file path
     hhi_by_file: dict = {}
@@ -361,8 +399,8 @@ async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(g
         churn_data = await churn_a.analyze_repository(repo_id)
         for fo in churn_data.get("file_ownership", []):
             hhi_by_file[fo["file_path"]] = fo.get("bus_factor_hhi", 0.0)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("bus-factor HHI load failed for repo %s: %s", repo_id, e)
 
     # Load coupling scores once → dict keyed by file path (max coupling score)
     coupling_by_file: dict = {}
@@ -373,8 +411,8 @@ async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(g
             src, tgt, val = lnk.get("source", ""), lnk.get("target", ""), lnk.get("value", 0)
             coupling_by_file[src] = max(coupling_by_file.get(src, 0), val)
             coupling_by_file[tgt] = max(coupling_by_file.get(tgt, 0), val)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("coupling load failed for repo %s: %s", repo_id, e)
 
     # Load active secret findings once → dict keyed by file path
     secrets_by_file: dict = defaultdict(list)
@@ -387,8 +425,8 @@ async def get_repo_files(repo_id: str, limit: int = None, user: User = Depends(g
         )
         for finding in secret_result.scalars().all():
             secrets_by_file[finding.file_path].append(finding)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("secret findings load failed for repo %s: %s", repo_id, e)
 
     files = []
     for row in file_rows:
@@ -624,8 +662,8 @@ async def _background_risk_compute(repo_id: str):
                     breakdown=risk.get("breakdown"),
                 ))
                 await session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("background risk compute failed for repo %s: %s", repo_id, e)
 
 
 async def _save_score_snapshot(repo_id: str, risk: dict):
@@ -649,8 +687,8 @@ async def _save_score_snapshot(repo_id: str, risk: dict):
             )
             session.add(snapshot)
             await session.commit()
-    except Exception:
-        pass  # Never fail the main request due to snapshot errors
+    except Exception as e:
+        logger.warning("score snapshot save failed for repo %s: %s", repo_id, e)
 
 
 @router.get("/{repo_id}/risk")
@@ -680,8 +718,8 @@ async def get_repo_risk(
                 breakdown=risk.get("breakdown"),
             ))
             await db.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("risk snapshot save failed for repo %s: %s", repo_id, e)
 
     return risk
 
@@ -720,12 +758,32 @@ async def check_ci_workflows(
                 timeout=8,
             )
         has_workflows = r.status_code == 200 and bool(r.json())
-    except Exception:
+    except Exception as e:
+        logger.warning("workflow check failed for %s/%s: %s", repo.owner, repo.name, e)
         has_workflows = False
     return {"has_workflows": has_workflows, "owner": repo.owner, "name": repo.name}
 
 
-@router.get("/{repo_id}/ci/stats")
+class CIStatsResponse(BaseModel):
+    pipeline_status: str
+    total_duration_seconds: Optional[float] = None
+    test_coverage: Optional[float] = None
+    coverage_delta: Optional[float] = None
+    unit_tests_passed: int = 0
+    unit_tests_total: int = 0
+    unit_duration_seconds: Optional[float] = None
+    unit_flaky_count: int = 0
+    integration_tests_passed: int = 0
+    integration_tests_total: int = 0
+    integration_duration_seconds: Optional[float] = None
+    integration_failures: int = 0
+    branch: Optional[str] = None
+    head_sha: str = ""
+    run_started_at: Optional[str] = None
+    job_log: List[str] = []
+
+
+@router.get("/{repo_id}/ci/stats", response_model=CIStatsResponse)
 async def get_ci_stats(
     repo_id: str,
     user: User = Depends(get_current_user),
@@ -909,10 +967,12 @@ async def suggest_reviewers(repo_id: str, pr_id: str = None, exclude: str = None
     await _require_repo_access(repo_id, user, db)
 
     exclude_list = exclude.split(",") if exclude else []
-    
-    chronos = await get_chronos_graph(db)
-    suggestions = await chronos.suggest_reviewers(repo_id, pr_id, exclude_list)
-    
+    try:
+        chronos = await get_chronos_graph(db)
+        suggestions = await chronos.suggest_reviewers(repo_id, pr_id, exclude_list)
+    except Exception as e:
+        logger.warning("suggest_reviewers failed for repo %s: %s", repo_id, e)
+        raise HTTPException(status_code=503, detail="Reviewer suggestion unavailable — ChronosGraph not ready")
     return {"suggestions": suggestions}
 
 
@@ -1018,7 +1078,8 @@ async def get_file_detail(
             if lnk.get("source") == path or lnk.get("target") == path
         ]
         coupling_rules.sort(key=lambda x: x["score"], reverse=True)
-    except Exception:
+    except Exception as e:
+        logger.warning("coupling rules load failed for %s repo %s: %s", path, repo_id, e)
         coupling_rules = []
 
     # Violations for this file from the latest arch analysis
@@ -1035,12 +1096,38 @@ async def get_file_detail(
         if v.get("file") == path or v.get("source_file") == path
     ]
 
+    # Active secret findings for this file
+    secret_rows = await db.execute(
+        select(SecretFinding).where(
+            SecretFinding.repo_id == repo_id,
+            SecretFinding.file_path == path,
+            SecretFinding.status == "active",
+        ).order_by(SecretFinding.line_number)
+    )
+    def _variable_name(detector: str) -> str:
+        if detector.startswith("generic_"):
+            return detector[len("generic_"):]
+        return detector
+
+    secrets = [
+        {
+            "detector": f.detector,
+            "variable_name": _variable_name(f.detector),
+            "severity": f.severity,
+            "line_number": f.line_number,
+            "masked_value": f.masked_value,
+            "message": f.message,
+        }
+        for f in secret_rows.scalars().all()
+    ]
+
     return {
         "path": path,
         "churn_history": churn_history,
         "ownership": ownership,
         "coupling_rules": coupling_rules,
         "violations": violations,
+        "secrets": secrets,
     }
 
 
@@ -1064,8 +1151,14 @@ async def generate_arch_policy_endpoint(
     arch = arch_result.scalars().first()
     violations = (arch.violations or []) if arch else []
 
-    explainer = await get_llm_explainer()
-    policy = await explainer.generate_arch_policy(repo_stats={}, violations=violations)
+    try:
+        explainer = await get_llm_explainer()
+        policy = await explainer.generate_arch_policy(repo_stats={}, violations=violations)
+    except Exception as e:
+        logger.warning("generate_arch_policy failed for repo %s: %s", repo_id, e)
+        raise HTTPException(status_code=503, detail="Policy generation unavailable — LLM keys not configured")
+    if policy is None:
+        raise HTTPException(status_code=503, detail="Policy generation unavailable — LLM keys not configured")
     return {"policy": policy}
 
 
@@ -1100,6 +1193,10 @@ async def suggest_refactoring(
     file_content = violations[0].get("file_content", "") if violations else ""
     issues = [{k: v for k, v in v.items() if k != "file_content"} for v in violations]
 
-    explainer = await get_llm_explainer()
-    suggestions = await explainer.suggest_refactoring(issues=issues, file_content=file_content)
+    try:
+        explainer = await get_llm_explainer()
+        suggestions = await explainer.suggest_refactoring(issues=issues, file_content=file_content)
+    except Exception as e:
+        logger.warning("suggest_refactoring failed for repo %s: %s", repo_id, e)
+        raise HTTPException(status_code=503, detail="Refactoring suggestions unavailable — LLM keys not configured")
     return {"suggestions": suggestions, "violation_count": len(violations)}

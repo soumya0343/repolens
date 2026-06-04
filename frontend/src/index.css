@@ -312,3 +312,14 @@ code {
 .connected-btn:hover {
   background: var(--accent-bg);
 }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes progressSlide {
+  0%   { transform: translateX(-100%); width: 60%; }
+  50%  { transform: translateX(60%);  width: 60%; }
+  100% { transform: translateX(200%); width: 60%; }
+}

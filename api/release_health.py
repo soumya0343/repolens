@@ -236,6 +236,7 @@ class ReleaseHealthTracker:
                 "rating": self._rate_lt(avg_lead_time) if avg_lead_time is not None else "unavailable",
                 "label": "Hours from first branch commit to merge",
                 "reason": lt_reason,
+                "approximate": lt_method == "pr_creation",
             },
             "change_failure_rate": {
                 "value": round(cfr * 100, 1) if cfr is not None else None,

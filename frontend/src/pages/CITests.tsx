@@ -2,17 +2,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { API_BASE_URL } from "../lib/apiConfig";
+import { authHdr, apiFetch } from "../lib/auth";
 import Tooltip from "../components/Tooltip";
-
-const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` });
-
-async function apiFetch<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url, { headers: authHdr() });
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-}
 
 interface FlakyTest {
   ci_run_id: number;

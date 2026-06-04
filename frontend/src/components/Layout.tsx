@@ -103,7 +103,7 @@ const Layout: React.FC<LayoutProps> = ({ activeNav, repoId, children }) => {
               letterSpacing: '0.04em',
               textTransform: 'uppercase',
             }}>
-              REPO_CORE
+              REPO_LENS
             </div>
           </div>
           <div style={{

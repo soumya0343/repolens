@@ -36,7 +36,8 @@ class SecretScannerTests(unittest.TestCase):
             f"+OPENAI_API_KEY={raw}\n"
         )
         findings = scan_text("src/app.ts", patch, mode="pull_request")
-        self.assertTrue(any(f["detector"] == "openai_key" for f in findings))
+        # matches openai_key_legacy (35-char key, legacy format)
+        self.assertTrue(any(f["detector"] in ("openai_key", "openai_key_legacy") for f in findings))
 
     def test_detects_generic_high_entropy_assignment(self):
         findings = scan_text("settings.py", "api_key = 'A1b2C3d4E5f6G7h8I9j0K1l2'")

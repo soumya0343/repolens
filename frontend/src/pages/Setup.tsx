@@ -36,8 +36,11 @@ export default function Setup() {
   const [connected, setConnected] = useState<ConnectedRepo[]>([]);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState<number | null>(null);
+  const [connectingUrl, setConnectingUrl] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "connected" | "available">("all");
+  const [hidePrivate, setHidePrivate] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -56,6 +59,27 @@ export default function Setup() {
 
   function findConnected(repo: GithubRepo) {
     return connected.find(c => c.owner === repo.owner.login && c.name === repo.name);
+  }
+
+  async function handleConnectByUrl() {
+    const url = urlInput.trim();
+    if (!url) return;
+    const token = localStorage.getItem("token");
+    setConnectingUrl(true);
+    try {
+      const res = await axios.post(`${API_BASE_URL}/repos/by-url`, { url }, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const newId = res.data?.repo_id;
+      toast.success(`Repository connected — backfill started`);
+      setUrlInput("");
+      if (newId) navigate(`/repo/${newId}`);
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail ?? err?.message ?? "Unknown error";
+      toast.error(`Failed to connect: ${msg}`);
+    } finally {
+      setConnectingUrl(false);
+    }
   }
 
   async function handleConnect(repo: GithubRepo) {
@@ -83,6 +107,7 @@ export default function Setup() {
   const filtered = available.filter(r => {
     const q = search.toLowerCase();
     const matchSearch = !q || `${r.owner.login}/${r.name}`.toLowerCase().includes(q);
+    if (hidePrivate && r.private) return false;
     const conn = findConnected(r);
     if (filter === "connected") return matchSearch && !!conn;
     if (filter === "available") return matchSearch && !conn;
@@ -166,12 +191,89 @@ export default function Setup() {
           ))}
         </div>
 
+        {/* Hide private toggle */}
+        <button
+          onClick={() => setHidePrivate(v => !v)}
+          style={{
+            background: hidePrivate ? "rgba(255,65,65,0.08)" : "transparent",
+            border: `1px solid ${hidePrivate ? "rgba(255,65,65,0.35)" : "var(--border)"}`,
+            color: hidePrivate ? "var(--danger)" : "var(--text-muted)",
+            borderRadius: 3,
+            padding: "3px 10px",
+            fontFamily: "var(--mono)",
+            fontSize: "0.68rem",
+            cursor: "pointer",
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            flexShrink: 0,
+          }}
+        >
+          {hidePrivate ? "PRIVATE: HIDDEN" : "HIDE PRIVATE"}
+        </button>
+
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "1.5rem" }}>
           <span style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--text-muted)", letterSpacing: "0.08em" }}>
             {loading ? "—" : `${connectedCount}/${available.length} CONNECTED`}
           </span>
         </div>
       </header>
+
+      {/* URL connect bar */}
+      <div style={{
+        background: "var(--surface)",
+        borderBottom: "1px solid var(--border)",
+        display: "flex",
+        alignItems: "center",
+        gap: "0.75rem",
+        padding: "0.6rem 2rem",
+        flexShrink: 0,
+      }}>
+        <span style={{ fontFamily: "var(--mono)", fontSize: "0.65rem", color: "var(--text-muted)", letterSpacing: "0.08em", flexShrink: 0 }}>
+          URL →
+        </span>
+        <input
+          type="text"
+          placeholder="https://github.com/owner/repo"
+          value={urlInput}
+          onChange={e => setUrlInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleConnectByUrl()}
+          style={{
+            flex: 1,
+            maxWidth: 480,
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
+            borderRadius: 3,
+            color: "var(--text)",
+            fontFamily: "var(--mono)",
+            fontSize: "0.72rem",
+            letterSpacing: "0.04em",
+            padding: "0.35rem 0.75rem",
+            outline: "none",
+          }}
+          onFocus={e => (e.target.style.borderColor = "var(--accent-border)")}
+          onBlur={e => (e.target.style.borderColor = "var(--border)")}
+        />
+        <button
+          onClick={handleConnectByUrl}
+          disabled={connectingUrl || !urlInput.trim()}
+          style={{
+            background: connectingUrl || !urlInput.trim() ? "var(--surface-raised)" : "var(--accent)",
+            border: "none",
+            color: connectingUrl || !urlInput.trim() ? "var(--text-muted)" : "#000",
+            borderRadius: 3,
+            padding: "0.35rem 1rem",
+            fontFamily: "var(--sans)",
+            fontSize: "0.68rem",
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+            cursor: connectingUrl || !urlInput.trim() ? "default" : "pointer",
+            flexShrink: 0,
+          }}
+        >
+          {connectingUrl ? "CONNECTING…" : "[+] CONNECT"}
+        </button>
+      </div>
 
       {/* Main content */}
       <main style={{ flex: 1, padding: "2.5rem 2.5rem 3rem", overflowY: "auto" }}>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
+import { authHdr, apiFetch } from '../lib/auth';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
 import { toast } from 'sonner';
@@ -11,16 +12,6 @@ interface CouplingNode { id: string; group: number }
 interface CouplingLink { source: string; target: string; value: number }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` });
-
-async function apiFetch<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url, { headers: authHdr() });
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-}
 
 function shortName(id: string): string {
   const part = id.includes('/') ? id.split('/').pop()! : id;

@@ -2,15 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { API_BASE_URL } from "../lib/apiConfig";
-
-const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` });
-async function apiFetch<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url, { headers: authHdr() });
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-}
+import { authHdr, apiFetch } from "../lib/auth";
 
 const DEFAULT_WEIGHTS = { coupling: 0.25, architecture: 0.20, bus_factor: 0.20, collaboration: 0.15, ci: 0.20 };
 const DEFAULT_ALLOWLIST = '{\n  "fingerprints": [],\n  "path_globs": [],\n  "detectors": []\n}';

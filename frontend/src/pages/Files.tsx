@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
+import { authHdr, apiFetch } from '../lib/auth';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
 import { toast } from 'sonner';
@@ -29,25 +30,25 @@ interface FileData {
 
 interface RepoMeta { id: string; name: string; owner: string; synced_at?: string }
 
+interface SecretDetail {
+  detector: string;
+  variable_name: string;
+  severity: string;
+  line_number: number;
+  masked_value: string;
+  message?: string | null;
+}
+
 interface FileDetail {
   path: string;
   churn_history: { week: string; additions: number; deletions: number }[];
   ownership: { contributor: string; commits: number; share: number }[];
   coupling_rules: { file: string; score: number }[];
   violations: { type: string; severity: string; description: string; line: number }[];
+  secrets: SecretDetail[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` });
-
-async function apiFetch<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url, { headers: authHdr() });
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-}
 
 function riskScoreColor(s: number): string {
   if (s >= 75) return 'var(--danger)';
@@ -178,7 +179,7 @@ const Files: React.FC = () => {
 
   const criticalCount = files.filter(f => f.risk_score >= 75).length;
   const logs = buildTerminalLogs(files, meta);
-  const repoName = meta ? `${meta.owner.toUpperCase()}-CORE` : 'REPO_CORE';
+  const repoName = meta ? `${meta.owner.toUpperCase()}-CORE` : 'REPO_LENS';
 
   return (
     <Layout activeNav="files" repoId={repoId}>
@@ -568,6 +569,55 @@ const Files: React.FC = () => {
                 </div>
               ) : fileDetail ? (
                 <>
+                  {/* Secrets — first, highest priority */}
+                  {fileDetail.secrets?.length > 0 && (
+                    <div>
+                      <div style={{ fontFamily: 'var(--sans)', fontSize: '0.68rem', fontWeight: 700, color: 'var(--danger)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.6rem' }}>
+                        🔑 SECRETS DETECTED <span style={{ fontWeight: 400 }}>({fileDetail.secrets.length})</span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        {fileDetail.secrets.map((s, i) => (
+                          <div key={i} style={{ background: 'rgba(255,65,65,0.08)', border: '1px solid rgba(255,65,65,0.3)', borderRadius: 3, padding: '0.75rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                              <span style={{ fontFamily: 'var(--mono)', fontSize: '0.72rem', fontWeight: 700, color: 'var(--danger)', letterSpacing: '0.04em' }}>
+                                {s.detector.replace(/_/g, ' ').toUpperCase()}
+                              </span>
+                              <span style={{
+                                fontFamily: 'var(--sans)', fontSize: '0.6rem', fontWeight: 700,
+                                textTransform: 'uppercase', letterSpacing: '0.08em',
+                                padding: '1px 6px', borderRadius: 2,
+                                background: s.severity === 'critical' ? 'rgba(255,65,65,0.2)' : s.severity === 'high' ? 'rgba(255,100,0,0.2)' : 'rgba(255,150,0,0.15)',
+                                color: s.severity === 'critical' ? 'var(--danger)' : s.severity === 'high' ? '#ff6400' : 'var(--warning)',
+                              }}>
+                                {s.severity}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.4rem' }}>
+                              <span style={{ fontFamily: 'var(--sans)', fontSize: '0.62rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>variable</span>
+                              <code
+                                title="Click to copy"
+                                onClick={() => { navigator.clipboard.writeText(s.variable_name); toast.success(`Copied: ${s.variable_name}`); }}
+                                style={{
+                                  fontFamily: 'var(--mono)', fontSize: '0.78rem', fontWeight: 700,
+                                  color: 'var(--text-h)', background: 'rgba(255,65,65,0.12)',
+                                  padding: '1px 6px', borderRadius: 2, cursor: 'pointer',
+                                  border: '1px solid rgba(255,65,65,0.25)', letterSpacing: '0.02em',
+                                  userSelect: 'all',
+                                }}
+                              >
+                                {s.variable_name}
+                              </code>
+                              <span style={{ fontFamily: 'var(--mono)', fontSize: '0.6rem', color: 'var(--text-muted)' }}>line {s.line_number}</span>
+                            </div>
+                            <div style={{ fontFamily: 'var(--mono)', fontSize: '0.65rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                              {s.masked_value}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Churn History */}
                   {fileDetail.churn_history.length > 0 && (() => {
                     const W = 360, H = 80, pad = 8;
@@ -678,7 +728,7 @@ const Files: React.FC = () => {
                     </div>
                   )}
 
-                  {!fileDetail.churn_history.length && !fileDetail.ownership.length && !fileDetail.coupling_rules.length && !fileDetail.violations.length && (
+                  {!fileDetail.churn_history.length && !fileDetail.ownership.length && !fileDetail.coupling_rules.length && !fileDetail.violations.length && !fileDetail.secrets?.length && (
                     <div style={{ fontFamily: 'var(--mono)', fontSize: '0.72rem', color: 'var(--text-muted)', letterSpacing: '0.06em', textAlign: 'center', padding: '2rem 0' }}>
                       NO_DETAIL_DATA // trigger backfill
                     </div>

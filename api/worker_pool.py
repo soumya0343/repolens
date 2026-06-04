@@ -7,6 +7,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 BACKFILL_QUEUE = os.getenv("BACKFILL_QUEUE", "arq:backfill")
 CI_QUEUE = os.getenv("CI_QUEUE", "arq:ci")
 ARCH_QUEUE = os.getenv("ARCH_QUEUE", "arq:arch")
+CLASSIFIER_QUEUE = os.getenv("CLASSIFIER_QUEUE", "classifier_queue")
 _redis_pool = None
 
 async def get_redis_pool():

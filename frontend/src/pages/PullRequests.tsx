@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../lib/apiConfig';
+import { authHdr, apiFetch } from '../lib/auth';
 import Layout from '../components/Layout';
 import Tooltip from '../components/Tooltip';
 
@@ -21,16 +22,6 @@ interface PRData {
 interface RepoMeta { id: string; name: string; owner: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-const authHdr = () => ({ Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` });
-
-async function apiFetch<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url, { headers: authHdr() });
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-}
 
 function timeAgo(iso: string): string {
   const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);

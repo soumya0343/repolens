@@ -361,6 +361,18 @@ async def run_backfill_job(ctx, repo_id: str, github_token: str):
         except Exception as e:
             print(f"[WARN] Risk score refresh failed (non-fatal): {e}")
 
+        # Enqueue commit classification now that all commits are ingested
+        try:
+            from arq.connections import RedisSettings, create_pool
+            classifier_pool = await create_pool(
+                RedisSettings(host=os.getenv("REDIS_HOST", "localhost")),
+                default_queue_name=os.getenv("CLASSIFIER_QUEUE", "classifier_queue"),
+            )
+            await classifier_pool.enqueue_job("run_commit_classification", repo_id)
+            print(f"Commit classification enqueued for repo {repo_id}")
+        except Exception as e:
+            print(f"[WARN] Commit classification enqueue failed (non-fatal): {e}")
+
     print(f"Backfill complete for {owner}/{name}. Processed {total_commits} commits.")
     return total_commits
 
