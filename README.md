@@ -1,5 +1,7 @@
 # RepoLens
 
+**Live demo:** https://repolenss.duckdns.org
+
 GitHub-native SDLC intelligence platform. Transforms raw repository data into actionable developer insights — coupling analysis, architecture violations, bus factor, CI flakiness, team collaboration, and DORA metrics — surfaced via a React dashboard and a GitHub bot that comments on PRs.
 
 ## Architecture
