@@ -22,6 +22,21 @@ GitHub-native SDLC intelligence platform. Transforms raw repository data into ac
 
 **Services:** `api` · `ingestor` · `worker` · `arch-worker` · `ci-worker` · `classifier-worker` · `bot` · `frontend`
 
+## Tech Stack
+
+| Layer | Technologies |
+|-------|-------------|
+| **Frontend** | React 19, TypeScript 5.9, Vite 8, React Router 7, D3 7 (graph viz), Tailwind CSS 4, axios, sonner |
+| **API** | Python 3.11, FastAPI, Uvicorn, SQLAlchemy (async), Alembic (migrations), asyncpg / psycopg2, PyJWT, httpx, native WebSockets |
+| **Background workers** | ARQ (async Redis task queue), GitPython, Tree-sitter (+ language pack) for AST parsing, NetworkX (graph algorithms) |
+| **Data stores** | PostgreSQL 15 + TimescaleDB (time-series), Redis 7 (queue + cache), Neo4j 5 (collaboration graph) |
+| **AI / LLM** | Groq, Google Gemini (`google-generativeai` / `google-genai`) |
+| **Auth** | GitHub OAuth 2.0, JWT sessions |
+| **Reverse proxy / TLS** | Caddy (automatic HTTPS via Let's Encrypt), nginx (SPA serving + `/api` & `/ws` proxy) |
+| **Containerization** | Docker, Docker Compose (multi-service orchestration) |
+| **Hosting** | Microsoft Azure VM (Ubuntu 24.04 LTS), DuckDNS dynamic DNS |
+| **CI** | GitHub Actions (per-service test + frontend type-check) |
+
 ## Analysis Engines
 
 | Engine | What it does |
